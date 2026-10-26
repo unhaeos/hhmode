@@ -13,6 +13,8 @@ log.md         실패 로그. 한 줄씩
 
 ## 규칙 세 줄
 
+모델이 읽는 자리: 2·3번은 `~/.claude/CLAUDE.md` Verification 섹션(세션마다 자동 로드), 1번은 각 SKILL.md의 Procedure discipline. 이 README는 사람용이다.
+
 1. 플레이북 단계를 건너뛰면 `skip: <이유>`를 남긴다.
 2. 판정 어휘는 고정. 작업: `PASS / ISSUES / BLOCKED`. 조사: `VERIFIED / NOT VERIFIED / INCONCLUSIVE`. Inconclusive는 pass가 아니다.
 3. 모든 주장에 `measured / inferred / guess` 중 하나를 붙인다.
