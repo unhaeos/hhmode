@@ -20,6 +20,10 @@ Both are `Agent` calls with `subagent_type: "general-purpose"`. The main agent n
 
 **Why two lenses**: a single fresh-context reviewer still has one perspective. Two persona-diverse reviewers surface issues one lens would miss and expose disagreements for explicit user adjudication.
 
+## Procedure discipline
+
+Copy Steps 1-4 into your todo list verbatim before starting. A skipped step must be marked `skip: <reason>`. The report's first line is one of `PASS / ISSUES / BLOCKED`, computed mechanically from the two reviews (see Step 4), never from the main agent's own reading of the plan.
+
 ## Step 1 — Detect what to review
 
 Check in this order:
@@ -146,6 +150,8 @@ Output BOTH reviews **verbatim**. Do not summarize, soften, reorder, or add comm
 Format:
 
 ```
+**판정: PASS | ISSUES | BLOCKED**  (PASS = 양쪽 블로커 0건, 정면 충돌 없음 / ISSUES = 블로커 1건 이상 또는 정면 충돌 있음 / BLOCKED = 리뷰 대상 계획을 찾지 못함)
+
 ## 🅰 리뷰어 A — 실무 실행자
 <Reviewer A's full output, verbatim>
 
@@ -161,6 +167,8 @@ Format:
 ```
 
 ### Convergence/divergence map — rules
+
+Each finding in the map carries a label: `cited` when the reviewer pointed at current code (`file:line`) or a concrete plan step, `inferred` when it rests on a general claim with no pointer. An `inferred` 블로커 still counts for the verdict line, but say so, because it is the first thing to verify before acting.
 
 This map is the ONLY part the main agent authors. It is metadata, not a paraphrase. **Never restate either reviewer's finding text.** Use only the reviewers' own headings/identifiers and severity tags.
 

@@ -23,6 +23,10 @@ All three are launched via the `Agent` tool with `subagent_type: "general-purpos
 
 **Operational note**: one invocation = one complete review (~30-90s wall-clock). Do NOT run this skill multiple times per commit — the 3-round policy is retired; the three personas replace it. If the diff is comment-only or whitespace-only after filtering, fall through to Step 1 mode 5.
 
+## Procedure discipline
+
+Copy Steps 1-7 into your todo list verbatim before starting. A skipped step must be marked `skip: <reason>`. The report's first line is one of `PASS / ISSUES / BLOCKED` (see Step 7). Every 확정 verdict carries `measured` (the judge ran it) or `inferred` (the judge could not run it).
+
 ## Step 1 — Detect what to review
 
 Walk the priority list. Stop at the first match. Announce the chosen mode in one line so the user knows what is being reviewed.
@@ -165,7 +169,9 @@ Each debate thread produces: finding + attack + defense (or rebuttal ×2). Colle
 
 ## Step 6 — Final verdict (fresh judge)
 
-Spawn ONE fresh judge agent (no persona, `general-purpose`) — it has seen none of this before. Input: the diff, and per contested item the debate transcript; per auto-confirmed item the finding text. Prompt (Korean, same register): "당신은 리뷰 중재자입니다. 각 항목에 대해 판정하세요: ✅ 확정(커밋 전 수정 필요) / ⚠️ 권장(고치면 좋음) / ❌ 기각(사유 필수). 판정 기준: (1) 실제 재현 가능한 결함인가, (2) 현재 diff 범위의 문제인가, (3) 수정 비용 대비 가치가 있는가. severity 불일치 항목은 tier도 확정하세요. 공방에서 방어가 무너진 항목은 기각하고, 반박이 실패한 항목은 확정하세요. 각 판정에 한 줄 근거."
+Spawn ONE fresh judge agent (no persona, `general-purpose`) — it has seen none of this before. Input: the diff, and per contested item the debate transcript; per auto-confirmed item the finding text. Prompt (Korean, same register): "당신은 리뷰 중재자입니다. 각 항목에 대해 판정하세요: ✅ 확정(커밋 전 수정 필요) / ⚠️ 권장(고치면 좋음) / ❌ 기각(사유 필수). 판정 기준: (1) 실제 재현 가능한 결함인가, (2) 현재 diff 범위의 문제인가, (3) 수정 비용 대비 가치가 있는가. severity 불일치 항목은 tier도 확정하세요. 공방에서 방어가 무너진 항목은 기각하고, 반박이 실패한 항목은 확정하세요. 각 판정에 한 줄 근거. 확정을 내리기 전에 그 항목을 실제로 재현하거나 관련 테스트를 실행하고, 쓴 명령과 출력 핵심 줄을 첨부하세요. 실행해서 확인한 판정은 `measured`, 실행이 불가능해 코드만 읽고 내린 판정은 `inferred`로 표시하세요. 실행 결과가 finding과 어긋나면 기각하고 그 출력을 근거로 적으세요."
+
+The judge is the only agent in this pipeline allowed to run code. Reviewers stay READ ONLY (Step 3). Give the judge the repo path and the test command(s) you know of; it decides what to run per item.
 
 The main agent NEVER issues verdicts itself — adjudication belongs to the fresh judge, not the context that ran the pipeline.
 
@@ -174,9 +180,11 @@ The main agent NEVER issues verdicts itself — adjudication belongs to the fres
 Lead with the verdict list (this is what the user acts on), then appendices:
 
 ```
+**판정: PASS | ISSUES | BLOCKED**  (PASS = 확정 0건 / ISSUES = 확정 1건 이상 / BLOCKED = 리뷰 대상 없음 또는 판정자가 실행 불가)
+
 ## ⚖️ 최종 판정
 ### ✅ 확정 — 커밋 전 수정
-- [file:line] <finding 한 줄> (제기: A1 / 판정 근거 한 줄)
+- [file:line] <finding 한 줄> (제기: A1 / 판정 근거 한 줄 / measured|inferred: <명령 또는 사유>)
 ### ⚠️ 권장
 - ...
 ### ❌ 기각
@@ -235,6 +243,9 @@ When the user pushes back on a verdict or finding, do NOT answer from the main c
 - ❌ Letting contested items debate in free-form chat, or running extra rebuttal rounds
   ✅ Fixed turns only: attack → defense (solo) / one cross-rebuttal each (충돌)
 - ❌ The main agent issuing or overriding verdicts (확정/기각)
+- ❌ The judge issuing 확정 from reading alone when a test or repro was runnable
+  ✅ Run it, attach command + output, label `measured`; only unrunnable items are `inferred`
+- ❌ Omitting the `PASS / ISSUES / BLOCKED` first line, or inventing a fourth word
   ✅ Adjudication belongs to the fresh judge agent only
 - ❌ Sending 2+인 합의 or Minor items into the debate stage
   ✅ Debate is for solo Critical/Major and 정면 충돌 only — everything else routes straight to the judge/report

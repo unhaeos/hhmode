@@ -19,6 +19,8 @@ log.md         실패 로그. 한 줄씩
 
 ## 운영
 
+- 모든 스킬 보고서의 첫 줄은 `판정: PASS | ISSUES | BLOCKED`. 판정자/critic은 실행 없이 확정하지 않는다(`measured` / `inferred` 표시).
+
 - 에이전트가 틀리면 `log.md`에 한 줄.
 - 같은 줄이 두 번 쌓이면 파일(스킬/원칙) 또는 스크립트로 올린다.
 - 규칙마다 "이게 없으면 실제로 실패했다"는 근거가 `log.md`에 있어야 한다. 근거 없는 규칙은 지운다.
@@ -31,7 +33,7 @@ log.md         실패 로그. 한 줄씩
 | hillclimb, investigate | O | O |
 | code-review, plan-review | O (Agent 도구로 서브에이전트 사용) | X |
 | report | O (Artifact 도구 사용) | X |
-| commands/* | O | X |
+| commands/* (mm, slack-dm, weekly-report 등 6개) | O | X |
 
 ## pstack에서 가져온 것
 
@@ -42,7 +44,7 @@ log.md         실패 로그. 한 줄씩
 | `skills/hillclimb` | playbook `hillclimb` | Cursor 서브에이전트/모델 라우팅, worktree, PR 단계 제거. step 1에 선행 연구 확인 추가(autore 사건 2건) |
 | `skills/investigate` | playbook `investigation` + skill `figure-it-out` | how/why/unslop 라우팅 제거. 출력 형식과 판정 어휘만 유지 |
 | `principles/` 4개 | `principle-prove-it-works`, `explain-the-number`, `attack-the-premise`, `encode-lessons-in-structure` | 축약. 관련 스킬 링크 제거 |
-| 규칙 세 줄 | `poteto-mode` 라우터, `swarm`, `figure-it-out` | 909줄 라우터 대신 README 세 줄 |
+| 규칙 세 줄 | `poteto-mode` 라우터, `swarm`, `figure-it-out` | 909줄 라우터 대신 README 세 줄. code-review/plan-review에도 적용(첫 줄 판정, skip 이유, 판정자 실행 의무) |
 | `log.md` | `reflect` / `recall` 스킬의 목적 | 트랜스크립트 마이닝 대신 수동 한 줄 |
 
 안 가져온 것: 라우터 본문, 나머지 21개 플레이북, 나머지 20개 원칙, 스크립트 7천 줄, benny 자동화, `disable-model-invocation`.
