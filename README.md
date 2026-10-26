@@ -1,4 +1,4 @@
-# harness
+# hhmode
 
 Claude Code / Codex 양쪽에서 읽는 에이전트 작업 환경. 전부 평문 파일이고, 각 도구가 읽는 자리에 심링크로 연결된다.
 
