@@ -16,6 +16,17 @@ local/         Machine-local values (identity, paths). Gitignored.
 
 Not here yet, added when a need appears: a router, per-repo `features/` maps, verification scripts.
 
+## Install (new machine)
+
+```
+git clone git@github.com:haehoonseo/hhmode.git ~/projects/hhmode
+for s in ~/projects/hhmode/skills/*/; do ln -sfn "$s" ~/.claude/skills/$(basename "$s"); done
+for s in hillclimb investigate; do ln -sfn ~/projects/hhmode/skills/$s ~/.codex/skills/$s; done
+ln -sfn ~/projects/hhmode/commands ~/.claude/commands
+```
+
+Machine-local values go in `local/` (gitignored); see `commands/*.md` for what they read.
+
 ## Usage
 
 Nothing to start. The symlinks make every skill available in any directory where Claude Code or Codex runs.
