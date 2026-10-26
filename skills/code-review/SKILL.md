@@ -45,6 +45,11 @@ Walk the priority list. Stop at the first match. Announce the chosen mode in one
 
 ## Step 2 — Gather the material
 
+**Intent first.** Write one paragraph stating what the change is trying to do, from the user's request, the commit message, and the diff. Reviewers get this paragraph; without it they flood the output with questions the author already answered.
+
+**Repo review guide.** If the repo has a `REVIEW.md` (code owners' notes on what matters, what to ignore, what counts as failure), read it and pass it to all three reviewers and the judge verbatim. Recurring review findings in a repo belong in that file, not in this skill.
+
+
 Collect what the subagents will see. Pass it in the `Agent` prompt — do not expect the subagent to run git commands itself. (For large material, assemble the filled core template into ONE scratchpad file and have each subagent Read it — byte-identical material for all three; the persona block goes in each Agent prompt, not in the shared file.)
 
 - The full raw diff for the chosen mode (`git diff`, `git diff --cached`, or `git diff <upstream>...HEAD`).
@@ -212,6 +217,10 @@ Reviews in the appendix are **verbatim** — do not summarize, soften, or reorde
 ### Follow-up handling
 
 When the user pushes back on a verdict or finding, do NOT answer from the main context. Route the question to the persona that raised it or the judge via `SendMessage` (context intact) or a new `Agent` call with the relevant transcript quoted. The main agent never adjudicates.
+
+## Convergence
+
+One invocation is one review. If the user fixes findings and asks again, review only the new diff, do not re-report findings already raised, and after the third round say so and ask the author to reconsider the approach instead of running a fourth. (Claude Code team: an agent author and agent reviewer cycled 50+ times overnight; ~59% of re-flagged code was unchanged since the first pass.)
 
 ## Common mistakes
 

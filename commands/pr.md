@@ -14,7 +14,7 @@ Turn the current branch into a reviewable pull request. One task, one branch, on
 3. **Commit.** One commit unless the user asked for more. Message: `<type>(<scope>): <what changed, in the repo's language>` followed by a blank line and 1 to 3 lines of why. Types: feat, fix, refactor, docs, test, chore. Append `Co-Authored-By` as the session's attribution rules require.
 4. **Confirm the push.** Show the branch name, the remote, and the commit list, then ask once: push and open a PR? Do not push before an explicit yes (global rule: confirm before `git push`).
 5. **Push.** `git push -u origin <branch>`.
-6. **Open the PR.** `gh pr create --base main --title "<commit subject>" --body-file <tmp>` with this body, every section filled:
+6. **Open the PR.** `gh pr create --base main --title "<commit subject>" --body-file <tmp>` with this body, every section filled (Testing / Risk / How to revert are the three the Claude Code team requires on every PR):
 
    ```
    ## What
@@ -32,6 +32,9 @@ Turn the current branch into a reviewable pull request. One task, one branch, on
 
    ## Risks
    <what could break elsewhere, and what you checked to rule it out; "none found" is allowed only with the check that found none>
+
+   ## How to revert
+   <one line: `git revert <sha>`, flag to flip, or the data restore step if the change wrote to a DB>
 
    ## Not in this PR
    <follow-ups deliberately left out>
