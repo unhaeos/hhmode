@@ -8,6 +8,7 @@ Modeled on [pstack](https://github.com/poteto/pstack) by Lauren Tan, deliberatel
 
 ```
 skills/        One SKILL.md per skill. Symlinked into ~/.claude/skills/<name> and ~/.codex/skills/<name>.
+agents/        Subagent definitions (reviewers). Symlinked into ~/.claude/agents/<name>.md.
 commands/      Claude Code slash commands (Claude Code only). ~/.claude/commands -> this folder.
 principles/    One principle per file. Skills reference them by absolute path.
 log.md         Failure log, one line per incident.
@@ -23,6 +24,7 @@ git clone git@github.com:haehoonseo/hhmode.git ~/projects/hhmode
 for s in ~/projects/hhmode/skills/*/; do ln -sfn "$s" ~/.claude/skills/$(basename "$s"); done
 for s in hillclimb investigate; do ln -sfn ~/projects/hhmode/skills/$s ~/.codex/skills/$s; done
 ln -sfn ~/projects/hhmode/commands ~/.claude/commands
+for a in ~/projects/hhmode/agents/*.md; do ln -sfn "$a" ~/.claude/agents/$(basename "$a"); done
 ```
 
 Machine-local values go in `local/` (gitignored); see `commands/*.md` for what they read.
@@ -77,7 +79,7 @@ Where the model reads them: rules 2 and 3 live in `~/.claude/CLAUDE.md` (loaded 
 |---|---|
 | `hillclimb` | Iterative improvement of one metric: fixed stop predicate, frozen measurement harness, one hypothesis per iteration, keep or revert, `decision.tsv`. |
 | `investigate` | Read-only investigation ending in a cited explanation or recommendation. |
-| `code-review` | Three fresh-context persona reviewers, structured debate on contested items, a fresh judge that runs the code before confirming. |
+| `code-review` | Opus bug reviewer (repo access, may run tests) + Sonnet rules reviewer; every P0/P1 re-checked by an Opus validator that tries to reproduce it; runs on every PR via `/pr`; full mode adds diff-only and Fable reviewers. |
 | `plan-review` | Two fresh-context reviewers with different lenses, verbatim output plus a convergence/divergence map. |
 | `report` | House style for written reports as HTML artifacts. |
 
