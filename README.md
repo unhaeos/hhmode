@@ -36,6 +36,8 @@ Nothing to start. The symlinks make every skill available in any directory where
 | Improve one metric toward a target | `/hillclimb <metric> to <target>` |
 | Find out why something happens, read-only | `/investigate <question>`, or just ask "why does X ..." |
 | Review staged changes before a commit | `git add ...` then `/code-review` |
+| Open a PR from a task worktree, with evidence | `/pr` |
+| Merge one reviewed PR (merge-owner session) | `/land <PR#>` |
 | Stress-test a plan before implementing | `/plan-review <path to plan>` |
 | Write up results as a document | ask for a report; the `report` skill loads on its own |
 | Memo, to-do collection, weekly report, DM draft | `/mm`, `/collect-todos`, `/weekly-report`, `/slack-dm` |
