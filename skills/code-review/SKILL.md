@@ -118,6 +118,12 @@ First line: `PASS` / `ISSUES` / `BLOCKED` and the HEAD sha.
 This block is also the PR comment `/pr` posts. Raw reviewer outputs go in a collapsed appendix
 only when the user asks.
 
+**Gate record.** When the target was a commit (order 4, or a clean tree at HEAD), write the block to
+`$(git rev-parse --git-common-dir)/gate/<full HEAD sha>.review.md` (create the folder). Repos with a
+push gate (k-defense-kg `scripts/gate.py`) refuse to push a commit without it. Never write it for a
+staged or working-tree review — those do not certify a commit — and never write it by hand without
+the reviewers having run.
+
 ## Step 7 — Log for measuring the reviewer
 
 Append one row per shown finding to `~/.claude/review-log/<repo>.tsv` (create with a header):

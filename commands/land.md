@@ -14,7 +14,7 @@ Land a pull request that `/pr` opened. One PR at a time: do not start the next u
 3. **Tier.**
    - `low`: land without asking only if the repo's CLAUDE.md grants that for low tier.
    - `medium` / `high`, or no such grant: show the title, tier, verdict and diff stat, then ask the user once. An agent's approval never stands in for the user's.
-4. **On top of current main.** If `mergeStateStatus` is `BEHIND`, run `gh pr update-branch <n> --rebase` and wait for CI again. If the rebase conflicts, stop: the author's worktree resolves it, not the merge owner.
+4. **On top of current main.** If `mergeStateStatus` is `BEHIND`, run `gh pr update-branch <n> --rebase` and wait for CI again. If the rebase conflicts, stop: the author's worktree resolves it, not the merge owner. In a gated repo a clean rebase usually keeps the review/verify gate green (the `Verify:` line's patch id still matches the change). It turns red when the diff text differs: the change itself, or a line main changed within three lines of it (the id includes context lines on purpose — a false red costs a re-run, a false green certifies unchecked code). Either way stop and send it back to the author for a new `/pr` round on the rebased head.
 5. **CI.** `gh pr checks <n> --watch --fail-fast`. Every check green, or stop and report the failing one. CI green is required but is not the verdict; the verdict is the evidence in step 2.
 6. **Merge.** `gh pr merge <n> --squash --delete-branch`. Then read the PR back (`gh pr view <n> --json state,mergeCommit`) — a merge queue may only have queued it.
 7. **After.** In the main checkout, `git pull --ff-only`. Remove the task's worktree if it is clean (`git worktree remove <path>`); if it has leftover work, list it and leave it.
