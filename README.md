@@ -80,7 +80,7 @@ Where the model reads them: rules 2 and 3 live in `~/.claude/CLAUDE.md` (loaded 
 | `hillclimb` | Iterative improvement of one metric: fixed stop predicate, frozen measurement harness, one hypothesis per iteration, keep or revert, `decision.tsv`. |
 | `investigate` | Read-only investigation ending in a cited explanation or recommendation. |
 | `code-review` | Opus bug reviewer (repo access, may run tests) + Sonnet rules reviewer; every P0/P1 re-checked by an Opus validator that tries to reproduce it; runs on every PR via `/pr`; full mode adds diff-only and Fable reviewers. |
-| `plan-review` | Two fresh-context reviewers with different lenses, verbatim output plus a convergence/divergence map. |
+| `plan-review` | One repo-reading reviewer checks the plan's assumptions, order, verification and irreversible steps against the code; open questions come back as experiments. No design debate (pstack: review the diff, not the plan). |
 | `report` | House style for written reports as HTML artifacts. |
 
 ## Taken from pstack
