@@ -18,9 +18,10 @@ OLD = "b" * 40
 
 def result(**over):
     base = {
-        "sha": SHA, "mode": "standard",
+        "sha": SHA, "mode": "standard", "tier": "low",
         "lanes": [
             {"lane": "bug", "sha": SHA, "status": "ran"},
+            {"lane": "bug-gpt", "sha": SHA, "status": "ran"},
             {"lane": "rules", "sha": SHA, "status": "ran"},
             {"lane": "live", "sha": SHA, "status": "ran", "evidence": "curl /x -> 200"},
         ],
@@ -107,6 +108,14 @@ class Check(unittest.TestCase):
         lanes = result()["lanes"] + [{"lane": "bug-fable", "sha": SHA, "status": "ran"}]
         self.assertEqual(rr.check(result(mode="full", lanes=lanes), SHA, "PASS"), "PASS")
 
+    def test_both_modes_need_the_gpt_lane(self):
+        # the only reviewer from another company; without it every lane is an Anthropic model
+        lanes = [ln for ln in result()["lanes"] if ln["lane"] != "bug-gpt"]
+        with self.assertRaises(rr.Refused):
+            rr.check(result(lanes=lanes), SHA, "PASS")
+        blocked = lanes_with("bug-gpt", status="blocked", reason="codex exec failed")
+        self.assertEqual(rr.check(result(lanes=blocked), SHA, "PASS"), "BLOCKED")
+
     def test_raised_by_must_be_lane_names(self):
         # the log had 25 spellings of four reviewers ("opus", "Opusfull", "Fable)"), so no fix rate per reviewer
         for who in ("opus", "bug-reviewer(opus)", "Fable)", "bug, rules", "", None):
@@ -114,6 +123,13 @@ class Check(unittest.TestCase):
                 rr.check(result(findings=[{"id": "F1", "severity": "P3", "raised_by": who}]), SHA, "PASS")
         ok = {"id": "F1", "severity": "P3", "raised_by": "bug+bug-fable"}
         self.assertEqual(rr.check(result(findings=[ok]), SHA, "PASS"), "PASS")
+
+    # A missing or loose tier ("Low", "none") must not reach automerge.py as low by default.
+    def test_tier_is_required_and_exact(self):
+        for bad in (None, "Low", "none", "trivial"):
+            r = result(tier=bad) if bad is not None else {k: v for k, v in result().items() if k != "tier"}
+            with self.assertRaises(rr.Refused):
+                rr.check(r, SHA, "PASS")
 
     def test_result_for_another_commit_is_refused(self):
         with self.assertRaises(rr.Refused):
@@ -223,6 +239,12 @@ class EndToEnd(unittest.TestCase):
         self._write(verify="")
         self.assertEqual(self._main(), 2)
         self.assertFalse((self.gate / f"{self.sha}.review.md").exists())
+
+    def test_record_carries_the_tier(self):
+        self._write()
+        self.assertEqual(self._main(), 0)
+        rec = (self.gate / f"{self.sha}.review.md").read_text(encoding="utf-8")
+        self.assertIn("tier: low;", rec)
 
     def test_record_carries_the_verify_verdict(self):
         self._write()

@@ -48,12 +48,13 @@ Turn the current branch into a reviewable pull request. One task, one branch, on
 
 7. **Post the verifier's record on the PR.** `gh pr comment <number> --body-file <git common dir>/gate/<sha>.review.md` — the file the verifier wrote, unedited. The comment names the commit it reviewed; a later push makes it stale, and the next `/pr` run posts a new one.
    **Updating an open PR** (new commits after review fixes): re-run step 4 for the new head, then `gh pr edit <number> --body-file <tmp>` with the new `Review:`/`Verify:` lines **before** pushing, then push. A gated repo's CI ("리뷰·검증 관문") reads the body and is red while the lines name an older commit.
-8. **Report.** Print the PR URL, the verdict line, and anything the reviewer must look at first.
+8. **Auto-merge check.** Once CI has finished (`gh pr checks <number> --watch`), run `python3 ~/projects/hhmode/scripts/automerge.py <number>` from this worktree. It merges the reviewed commit only when the verifier's review and verify are PASS, the GPT lane ran, the highest of the author's, the verifier's and the GPT lane's tier is low (`skills/code-review/references/tiers.md`), the PR is mergeable and CI is green; otherwise it tells the user why. Either way it reports to Slack. Until `~/projects/hhmode/local/automerge` says `on` it only reports what it would have done (trial run from 2026-10-29). Run it again after every new verification of an open PR.
+9. **Report.** Print the PR URL, the verdict line, the automerge line, and anything the reviewer must look at first.
 
 ## Rules
 
 - A PR with an empty or hand-waved Verification section is not opened. Run the check or write `BLOCKED` with the reason.
-- Never `--force`, never push to main, never merge from this command. Merging is `/land` (the merge-owner session) or the user.
+- Never `--force`, never push to main. This command merges only through `automerge.py` (step 8); any other merge is `/land` (the merge-owner session) or the user.
 - If `gh` is not authenticated or the repo has no remote, stop and say so.
 - Output in Korean; commit message and PR body in the repo's existing language.
 

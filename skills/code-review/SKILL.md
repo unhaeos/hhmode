@@ -38,6 +38,14 @@ An author running this skill on its own change gets advice, not a gate record (p
 | **standard** | default; `/pr` runs it on every PR | bug-reviewer (Opus, full context) + rules-reviewer (Sonnet) |
 | **full** | risk tier high, or `--full` | standard + bug-reviewer on **Fable** (`model: fable`) |
 
+Both modes also get a GPT reviewer (lane `bug-gpt`, Codex), since every other lane is an Anthropic
+model and a same-family reviewer shares the author's blind spots (pstack runs Opus with Grok).
+In the gate, `verify_fresh.sh` runs it before the verifier starts. It reads the diff plus the
+changed files, because Codex cannot run commands on this machine. For a review outside the gate, run
+`python3 scripts/gpt_review_input.py <repo> <base> | codex exec -s read-only --ephemeral -o <out>
+"$(cat skills/code-review/gpt-reviewer.md)"` from the hhmode root and validate its P0/P1 like
+any other.
+
 Risk tier comes from the repo's CLAUDE.md when it defines one (e.g. k-defense-kg: DB schema, KG
 loads, API contracts, prompt ground truth = high).
 
