@@ -53,30 +53,30 @@ class Check(unittest.TestCase):
 
     def test_p1_without_validator_is_refused(self):
         # PR #22: a P1 (ReDoS) was never sent to finding-validator
-        f = {"id": "F1", "severity": "P1", "validation": "none"}
+        f = {"id": "F1", "raised_by": "bug", "severity": "P1", "validation": "none"}
         with self.assertRaises(rr.Refused):
             rr.check(result(findings=[f]), SHA, "PASS")
 
     def test_confirmed_p1_is_issues(self):
-        f = {"id": "F1", "severity": "P1", "validation": "CONFIRMED"}
+        f = {"id": "F1", "raised_by": "bug", "severity": "P1", "validation": "CONFIRMED"}
         self.assertEqual(rr.check(result(findings=[f]), SHA, "PASS"), "ISSUES")
 
     def test_rejected_p1_passes(self):
-        f = {"id": "F1", "severity": "P1", "validation": "REJECTED"}
+        f = {"id": "F1", "raised_by": "bug", "severity": "P1", "validation": "REJECTED"}
         self.assertEqual(rr.check(result(findings=[f]), SHA, "PASS"), "PASS")
 
     def test_unknown_severity_is_refused(self):
         # verifier note on hhmode #3: "p1" / "high" would skip the validator check
         for sev in ("p1", "P1 ", "high", None):
             with self.assertRaises(rr.Refused):
-                rr.check(result(findings=[{"id": "F1", "severity": sev}]), SHA, "PASS")
+                rr.check(result(findings=[{"id": "F1", "raised_by": "bug", "severity": sev}]), SHA, "PASS")
 
     def test_p3_needs_no_validator(self):
-        f = {"id": "F1", "severity": "P3"}
+        f = {"id": "F1", "raised_by": "bug", "severity": "P3"}
         self.assertEqual(rr.check(result(findings=[f]), SHA, "PASS"), "PASS")
 
     def test_rule_violation_is_issues(self):
-        f = {"id": "R1", "severity": "rule"}
+        f = {"id": "R1", "raised_by": "rules", "severity": "rule"}
         self.assertEqual(rr.check(result(findings=[f]), SHA, "PASS"), "ISSUES")
 
     def test_live_without_evidence_is_refused(self):
@@ -101,6 +101,19 @@ class Check(unittest.TestCase):
     def test_full_mode_needs_its_extra_lanes(self):
         with self.assertRaises(rr.Refused):
             rr.check(result(mode="full"), SHA, "PASS")
+
+    def test_full_mode_no_longer_needs_a_diff_only_lane(self):
+        # 2026-10-29: the diff-only lane raised no P0/P1 in 88 k-defense-kg review-log rows
+        lanes = result()["lanes"] + [{"lane": "bug-fable", "sha": SHA, "status": "ran"}]
+        self.assertEqual(rr.check(result(mode="full", lanes=lanes), SHA, "PASS"), "PASS")
+
+    def test_raised_by_must_be_lane_names(self):
+        # the log had 25 spellings of four reviewers ("opus", "Opusfull", "Fable)"), so no fix rate per reviewer
+        for who in ("opus", "bug-reviewer(opus)", "Fable)", "bug, rules", "", None):
+            with self.assertRaises(rr.Refused):
+                rr.check(result(findings=[{"id": "F1", "severity": "P3", "raised_by": who}]), SHA, "PASS")
+        ok = {"id": "F1", "severity": "P3", "raised_by": "bug+bug-fable"}
+        self.assertEqual(rr.check(result(findings=[ok]), SHA, "PASS"), "PASS")
 
     def test_result_for_another_commit_is_refused(self):
         with self.assertRaises(rr.Refused):
@@ -136,10 +149,46 @@ class EndToEnd(unittest.TestCase):
         r = result(sha=self.sha, lanes=[{**ln, "sha": self.sha} for ln in result()["lanes"]], **over)
         self.res.write_text(json.dumps(r), encoding="utf-8")
 
-    def _main(self, mode="standard"):
+    def _main(self, mode="standard", since=None):
         return rr.main(["--repo", str(self.repo), "--result", str(self.res), "--report", str(self.rep),
                         "--session", "11111111-2222-3333-4444-555555555555", "--mode", mode,
-                        "--log-dir", str(self.logs)])
+                        "--log-dir", str(self.logs)] + (["--since", since] if since else []))
+
+    # A re-review limited to the diff after an earlier commit (pstack: re-verify in proportion).
+    def _second_commit(self, reviewed=True):
+        first = self.sha
+        if reviewed:
+            (self.gate / f"{first}.review.md").write_text(
+                "**Review: ISSUES** · x\n\n<!-- verifier-session: 9; verify: PASS; lanes: -->\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q",
+                        "--allow-empty", "-m", "fix"], check=True, capture_output=True)
+        self.sha = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+                                  check=True, capture_output=True, text=True).stdout.strip()
+        return first
+
+    def test_since_a_reviewed_ancestor_is_named_in_the_record(self):
+        first = self._second_commit()
+        self._write()
+        self.assertEqual(self._main(since=first), 0)
+        head = (self.gate / f"{self.sha}.review.md").read_text(encoding="utf-8").splitlines()[0]
+        self.assertEqual(head, f"**Review: PASS** · {self.sha[:7]} · standard · since {first[:7]} · verifier 11111111")
+
+    def test_since_an_unreviewed_commit_is_refused(self):
+        # otherwise the diff before it would never have been read by any verifier
+        first = self._second_commit(reviewed=False)
+        self._write()
+        self.assertEqual(self._main(since=first), 2)
+        self.assertFalse((self.gate / f"{self.sha}.review.md").exists())
+
+    def test_since_the_commit_itself_or_a_non_ancestor_is_refused(self):
+        self._second_commit()
+        self._write()
+        self.assertEqual(self._main(since=self.sha), 2)
+        other = subprocess.run(["git", "-C", str(self.repo), "-c", "user.email=t@t", "-c", "user.name=t",
+                                "commit-tree", "-m", "o", "HEAD^{tree}"],
+                               check=True, capture_output=True, text=True).stdout.strip()
+        (self.gate / f"{other}.review.md").write_text("<!-- verifier-session: 9 -->\n", encoding="utf-8")
+        self.assertEqual(self._main(since=other), 2)
 
     # Found by the verifier on hhmode #3 (F2, F3, F1).
     def test_full_request_reported_as_standard_is_refused(self):
@@ -174,7 +223,7 @@ class EndToEnd(unittest.TestCase):
         self.assertFalse((self.gate / f"{self.sha}.review.md").exists())
 
     def test_refused_result_writes_nothing(self):
-        self._write(findings=[{"id": "F1", "severity": "P0", "validation": "none"}])
+        self._write(findings=[{"id": "F1", "raised_by": "bug", "severity": "P0", "validation": "none"}])
         self.assertEqual(self._main(), 2)
         self.assertFalse((self.gate / f"{self.sha}.review.md").exists())
         self.assertFalse((self.logs / "myrepo.tsv").exists())

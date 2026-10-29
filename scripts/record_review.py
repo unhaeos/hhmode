@@ -17,7 +17,11 @@ reviewed by two lanes when one had run, a P1 skipped its validator, and no revie
 reviewed commits. pstack: "Only a verdict from an agent that did not write the code counts."
 
 Usage: record_review.py --repo <worktree> --result <result.json> --report <report.md> --session <uuid>
-                        --mode standard|full
+                        --mode standard|full [--since <reviewed ancestor sha>]
+
+A re-review is proportional to what changed since the last one (pstack autopilot-full): with `--since`, the
+review lanes read only the diff after a commit that already has a verifier record on this branch. Verify and
+live still run on this commit.
 """
 from __future__ import annotations
 
@@ -28,13 +32,19 @@ import pathlib
 import subprocess
 import sys
 
+# Full mode had a fourth lane, a bug reviewer given only the diff (Anthropic's plugin). In k-defense-kg's review
+# log (88 rows, 2026-10-29) it raised 5 findings and no P0/P1; the full-context Opus lane raised about 10 P0/P1 and
+# Fable 2-3 that Opus did not. It was dropped.
 REQUIRED = {
     "standard": ("bug", "rules", "verify", "live"),
-    "full": ("bug", "rules", "bug-diff-only", "bug-fable", "verify", "live"),
+    "full": ("bug", "rules", "bug-fable", "verify", "live"),
 }
 VALIDATED = {"CONFIRMED", "PLAUSIBLE", "REJECTED"}
 SERIOUS = {"P0", "P1"}
 SEVERITIES = {"P0", "P1", "P2", "P3", "rule"}
+# Who raised a finding: lane names, joined with "+" when several raised it. The log had 25 spellings of four
+# reviewers ("opus", "Opus", "Opusfull", "Fable)", ...), so the fix rate per reviewer could not be counted.
+RAISERS = {"bug", "rules", "bug-fable", "live", "verify"}
 
 
 class Refused(Exception):
@@ -130,6 +140,10 @@ def check(result: dict, sha: str, verify: str) -> str:
         if f.get("severity") in SERIOUS and f.get("validation") not in VALIDATED:
             raise Refused(f"{f.get('id')} is {f.get('severity')} without a validator verdict "
                           f"(got {f.get('validation')!r}) — spawn finding-validator for it")
+        raisers = str(f.get("raised_by", "")).split("+")
+        if not all(r in RAISERS for r in raisers):
+            raise Refused(f"{f.get('id')} has raised_by {f.get('raised_by')!r}; use lane names from "
+                          f"{sorted(RAISERS)}, joined with '+'")
     if blocked:
         return "BLOCKED"
     live_issue = [f for f in findings
@@ -140,10 +154,26 @@ def check(result: dict, sha: str, verify: str) -> str:
     return "PASS"
 
 
-def render(verdict: str, sha: str, result: dict, report: str, session: str, verify: str) -> str:
+def check_since(repo: pathlib.Path, gdir: pathlib.Path, sha: str, since: str) -> str:
+    """The full sha of `since`, or raise Refused. A review limited to the diff after `since` stands only if
+    `since` itself was reviewed by a verifier and lies on this commit's history."""
+    full = git(repo, "rev-parse", since)
+    if full == sha:
+        raise Refused("--since names the commit under review itself")
+    if subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", full, sha]).returncode != 0:
+        raise Refused(f"--since {full[:7]} is not an ancestor of {sha[:7]}")
+    rec = gdir / f"{full}.review.md"
+    if not rec.exists() or "verifier-session:" not in rec.read_text(encoding="utf-8"):
+        raise Refused(f"--since {full[:7]} has no verifier record, so the diff before it was never reviewed")
+    return full
+
+
+def render(verdict: str, sha: str, result: dict, report: str, session: str, verify: str,
+           since: str | None = None) -> str:
     lanes = ",".join(f"{ln.get('lane')}@{(ln.get('sha') or '-')[:7]}:{ln.get('status')}"
                      for ln in result.get("lanes", []))
-    head = f"**Review: {verdict}** · {sha[:7]} · {result['mode']} · verifier {session[:8]}"
+    scope = f" · since {since[:7]}" if since else ""
+    head = f"**Review: {verdict}** · {sha[:7]} · {result['mode']}{scope} · verifier {session[:8]}"
     # `verify:` lets the launcher print the Verify line for a repo that has no verify.json.
     return (f"{head}\n\n{report.strip()}\n\n"
             f"<!-- verifier-session: {session}; verify: {verify}; lanes: {lanes} -->\n")
@@ -170,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--session", required=True)
     ap.add_argument("--mode", required=True, choices=sorted(REQUIRED),
                     help="the mode the launcher asked for; the result must match it")
+    ap.add_argument("--since", help="the review lanes read only the diff after this reviewed ancestor")
     ap.add_argument("--log-dir", type=pathlib.Path, default=pathlib.Path.home() / ".claude" / "review-log")
     a = ap.parse_args(argv)
 
@@ -184,13 +215,14 @@ def main(argv: list[str] | None = None) -> int:
         has_verify_step = (repo / "scripts" / "verify.py").exists()
         verify = verify_verdict(gdir, sha) if has_verify_step else verify_from_lane(result, sha)
         verdict = check(result, sha, verify)
+        since = check_since(repo, gdir, sha, a.since) if a.since else None
     except Refused as e:
         print(f"REFUSED: {e}", file=sys.stderr)
         return 2
 
     gdir.mkdir(parents=True, exist_ok=True)
     out = gdir / f"{sha}.review.md"
-    out.write_text(render(verdict, sha, result, a.report.read_text(encoding="utf-8"), a.session, verify),
+    out.write_text(render(verdict, sha, result, a.report.read_text(encoding="utf-8"), a.session, verify, since),
                    encoding="utf-8")
     a.log_dir.mkdir(parents=True, exist_ok=True)
     with (a.log_dir / f"{repo_name(repo)}.tsv").open("a", encoding="utf-8") as fh:
