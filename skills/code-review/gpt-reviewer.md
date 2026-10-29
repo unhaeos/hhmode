@@ -25,3 +25,11 @@ Output exactly this, in English:
 ```
 
 or `## Findings\nnone`.
+
+Then, always, the risk tier of the whole change by the rubric appended below, with the changed path that
+decides it:
+
+```
+## Tier
+low | medium | high — <path: one-line reason>
+```

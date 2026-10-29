@@ -70,9 +70,14 @@ run it with `<python> .verify/<name>.py`.
    `REFUSED`, do what it names (run the lane on this commit, spawn the validator, add the evidence) and run
    it again. Never write or edit the gate record yourself.
 
+   Set `tier` yourself from the whole diff (not the commit's scope) by `references/tiers.md`, and name the
+   changed path that decides it in `tier_reason`. Do not copy the author's tier: a low tier lets the change merge
+   without the user, and the merge takes the highest of the author's, yours and the GPT lane's.
+
    `result.json`:
    ```json
    {"sha": "<full sha>", "mode": "standard",
+    "tier": "low", "tier_reason": "<path: one-line reason>",
     "lanes": [
       {"lane": "bug", "sha": "<full sha>", "status": "ran", "model": "opus"},
       {"lane": "rules", "sha": "<full sha>", "status": "ran", "model": "sonnet"},

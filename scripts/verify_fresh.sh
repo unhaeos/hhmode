@@ -101,7 +101,8 @@ if [ "${PRINT_PROMPT:-0}" != "1" ]; then
   elif ! python3 "$here/scripts/gpt_review_input.py" "$vdir" "$gbase" > "$work/gpt-input.md" 2> "$work/gpt-input.err"; then
     gpt_status="blocked: building the input failed, see $work/gpt-input.err"
   elif timeout 1500 codex exec -s read-only --ephemeral -C "$vdir" -c 'model_reasoning_effort="high"' \
-         -o "$gpt" "$(cat "$here/skills/code-review/gpt-reviewer.md")" < "$work/gpt-input.md" \
+         -o "$gpt" "$(cat "$here/skills/code-review/gpt-reviewer.md" "$here/skills/code-review/references/tiers.md")" \
+         < "$work/gpt-input.md" \
          > "$work/gpt-review.log" 2>&1 && [ -s "$gpt" ]; then
     gpt_status="ran"
   else
@@ -195,6 +196,8 @@ if ! head -n 1 "$rec" | grep -qF "· $mode ·"; then
   exit 1
 fi
 echo "record: $rec"
+# Keep the GPT review next to the record: scripts/automerge.py reads its tier, and $work goes away on exit.
+[ "$gpt_status" = ran ] && cp "$gpt" "$common/gate/$sha.gpt.md"
 # The PR body's Review/Verify lines, taken from the records the verifier produced — the author pastes these
 # instead of typing a verdict.
 python3 - "$rec" "$common/gate/$sha.verify.json" <<'PY'

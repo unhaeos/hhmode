@@ -45,6 +45,8 @@ REQUIRED = {
 VALIDATED = {"CONFIRMED", "PLAUSIBLE", "REJECTED"}
 SERIOUS = {"P0", "P1"}
 SEVERITIES = {"P0", "P1", "P2", "P3", "rule"}
+# references/tiers.md. A low tier lets scripts/automerge.py merge without the user, so it is required, never defaulted.
+TIERS = {"low", "medium", "high"}
 # Who raised a finding: lane names, joined with "+" when several raised it. The log had 25 spellings of four
 # reviewers ("opus", "Opus", "Opusfull", "Fable)", ...), so the fix rate per reviewer could not be counted.
 RAISERS = {"bug", "rules", "bug-fable", "bug-gpt", "live", "verify"}
@@ -111,6 +113,8 @@ def check(result: dict, sha: str, verify: str) -> str:
     mode = result.get("mode")
     if mode not in REQUIRED:
         raise Refused(f"mode must be one of {sorted(REQUIRED)}, got {mode!r}")
+    if result.get("tier") not in TIERS:
+        raise Refused(f"tier must be one of {sorted(TIERS)} (references/tiers.md), got {result.get('tier')!r}")
     lanes = {ln.get("lane"): ln for ln in result.get("lanes", [])}
     blocked = []
     for name in REQUIRED[mode]:
@@ -196,7 +200,7 @@ def render(verdict: str, sha: str, result: dict, report: str, session: str, veri
     head = f"**Review: {verdict}** · {sha[:7]} · {result['mode']}{scope} · verifier {session[:8]}"
     # `verify:` lets the launcher print the Verify line for a repo that has no verify.json.
     return (f"{head}\n\n{report.strip()}\n\n"
-            f"<!-- verifier-session: {session}; verify: {verify}; lanes: {lanes} -->\n")
+            f"<!-- verifier-session: {session}; verify: {verify}; tier: {result['tier']}; lanes: {lanes} -->\n")
 
 
 def log_rows(result: dict, sha: str, verdict: str) -> list[str]:

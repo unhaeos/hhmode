@@ -11,7 +11,7 @@ skills/        One SKILL.md per skill. Symlinked into ~/.claude/skills/<name> an
 agents/        Subagent definitions (reviewers). Symlinked into ~/.claude/agents/<name>.md.
 commands/      Claude Code slash commands (Claude Code only). ~/.claude/commands -> this folder.
 principles/    One principle per file. Skills reference them by absolute path.
-scripts/       Checks the harness runs instead of trusting text: verify_fresh.sh, record_review.py, sync_self.sh (+ tests).
+scripts/       Checks the harness runs instead of trusting text: verify_fresh.sh, record_review.py, automerge.py, sync_self.sh (+ tests).
 log.md         Failure log, one line per incident.
 local/         Machine-local values (identity, paths). Gitignored.
 ```
@@ -21,6 +21,10 @@ Not here yet, added when a need appears: a router, per-repo `features/` maps.
 ## Independent verification
 
 The author of a change does not review it for a gate. `/pr` runs `scripts/verify_fresh.sh`, which starts a fresh headless session at the same commit; that session follows `skills/code-review/verifier.md` (verify step, review lanes, a live lane on the real surface) and writes the record through `scripts/record_review.py`. The script decides the verdict and refuses a record whose lanes did not all run on this commit, a P0/P1 without a validator verdict, or a live lane without evidence; it also appends the review-log rows. Tests: `python3 -m unittest scripts/test_record_review.py`.
+
+## Auto-merge
+
+`/pr` ends with `scripts/automerge.py <PR#>`. A PR merges without the user only when the verifier's review and verify are PASS, the GPT lane (Codex, another company's model) ran, the highest of the author's, the verifier's and the GPT lane's risk tier is low (`skills/code-review/references/tiers.md`), the PR is mergeable and CI is green. The merge pins the reviewed commit (`gh pr merge --match-head-commit`). Every PR is reported to Slack: merged, or "확인 필요" with the reasons. `local/automerge` = `on` merges; anything else only reports what it would have done. Slack target: `local/notify.json` (`{"token_file": ..., "channel": ...}`). Tests: `python3 -m unittest scripts/test_automerge.py`.
 
 ## Install (new machine)
 
@@ -113,6 +117,7 @@ Source: pstack v0.15.32, MIT. Each adapted file notes its origin at the bottom.
 | `log.md` | purpose of `reflect` / `recall` | Manual one-liners instead of transcript mining. |
 | `skills/correct` | skill `correct` (+ the transcript reading of `reflect`) — pstack c742dd6 | Inputs added: review-log, log.md; harness classes; a propose-then-approve step; proofs need a writable worktree, else BLOCKED. `reflect`'s three-lens fan-out not ported. |
 | `commands/bro.md` | skill `bro` — pstack c742dd6 | A Claude Code command instead of a skill. pstack's one-line prompt plus rules from the user's corrections: no coined labels, whole sentences, one concrete case, plain over short. |
+| `scripts/automerge.py`, `references/tiers.md` | playbook `autopilot-full` ("no owner merges on its own verdict", "only a clean verdict on the patch that merges authorizes the merge") — pstack c742dd6 | A script merges, not an agent, and only for the low tier; the tier is the highest of three independent calls; a trial week reports without merging. |
 | `skills/code-review/verifier.md`, `scripts/verify_fresh.sh`, `scripts/record_review.py` | playbooks `shipping` (verifier lane), `autopilot-full` (live lane, "you own the verdicts, never the PRs") — pstack c742dd6 | One fresh headless session per commit instead of a cloud-agent swarm and a root agent. The verdict is enforced by a script and the push gate rather than by a root agent's audit. |
 
 Not taken: the router body, the other 20 playbooks, the other 20 principles, ~7k lines of scripts, the automation pack, `disable-model-invocation`.
