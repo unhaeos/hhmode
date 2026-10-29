@@ -1,8 +1,8 @@
 # hhmode
 
-A small, git-tracked agent harness shared by Claude Code and Codex. Everything here is plain text; each tool reads it through a symlink into the directory it already scans. Nothing runs on its own.
+A small, git-tracked agent harness shared by Claude Code and Codex. Everything here is plain text except `scripts/`; each tool reads it through a symlink into the directory it already scans. Nothing runs on its own.
 
-Modeled on [pstack](https://github.com/poteto/pstack) by Lauren Tan, deliberately kept to the parts that have earned their place. A rule gets added here only after the same failure has shown up twice.
+Modeled on [pstack](https://github.com/cursor/plugins/tree/main/pstack) by Lauren Tan (it moved from `poteto/pstack` into Cursor's plugins repo; local copy for reading: `~/ref/pstack-src/pstack`), deliberately kept to the parts that have earned their place. A rule gets added here only after the same failure has shown up twice.
 
 ## Layout
 
@@ -11,11 +11,16 @@ skills/        One SKILL.md per skill. Symlinked into ~/.claude/skills/<name> an
 agents/        Subagent definitions (reviewers). Symlinked into ~/.claude/agents/<name>.md.
 commands/      Claude Code slash commands (Claude Code only). ~/.claude/commands -> this folder.
 principles/    One principle per file. Skills reference them by absolute path.
+scripts/       Checks the harness runs instead of trusting text: verify_fresh.sh, record_review.py (+ tests).
 log.md         Failure log, one line per incident.
 local/         Machine-local values (identity, paths). Gitignored.
 ```
 
-Not here yet, added when a need appears: a router, per-repo `features/` maps, verification scripts.
+Not here yet, added when a need appears: a router, per-repo `features/` maps.
+
+## Independent verification
+
+The author of a change does not review it for a gate. `/pr` runs `scripts/verify_fresh.sh`, which starts a fresh headless session at the same commit; that session follows `skills/code-review/verifier.md` (verify step, review lanes, a live lane on the real surface) and writes the record through `scripts/record_review.py`. The script decides the verdict and refuses a record whose lanes did not all run on this commit, a P0/P1 without a validator verdict, or a live lane without evidence; it also appends the review-log rows. Tests: `python3 -m unittest scripts/test_record_review.py`.
 
 ## Install (new machine)
 
@@ -94,8 +99,9 @@ Source: pstack v0.15.32, MIT. Each adapted file notes its origin at the bottom.
 | `principles/` (4) | `prove-it-works`, `explain-the-number`, `attack-the-premise`, `encode-lessons-in-structure` | Shortened. Cross-skill links removed. |
 | Three rules | `poteto-mode` router, `swarm`, `figure-it-out` | Three README lines instead of a 909-line router. Applied to `code-review` and `plan-review` as well. |
 | `log.md` | purpose of `reflect` / `recall` | Manual one-liners instead of transcript mining. |
+| `skills/code-review/verifier.md`, `scripts/verify_fresh.sh`, `scripts/record_review.py` | playbooks `shipping` (verifier lane), `autopilot-full` (live lane, "you own the verdicts, never the PRs") — pstack c742dd6 | One fresh headless session per commit instead of a cloud-agent swarm and a root agent. The verdict is enforced by a script and the push gate rather than by a root agent's audit. |
 
-Not taken: the router body, the other 21 playbooks, the other 20 principles, ~7k lines of scripts, the automation pack, `disable-model-invocation`.
+Not taken: the router body, the other 20 playbooks, the other 20 principles, ~7k lines of scripts, the automation pack, `disable-model-invocation`.
 
 ## License
 

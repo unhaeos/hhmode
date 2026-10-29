@@ -22,9 +22,14 @@ reports what they found and what the validators confirmed.
 
 ## Procedure discipline
 
-Copy Steps 1–7 into your todo list verbatim. A skipped step is marked `skip: <reason>`. The
-report's first line is `PASS`, `ISSUES` or `BLOCKED` (Step 6). Every finding shown to the user
-carries `measured` (a validator reproduced it) or `inferred` (could not be run).
+A skipped step is marked `skip: <reason>` in the report. The report's first line is `PASS`,
+`ISSUES` or `BLOCKED` (Step 6). Every finding shown to the user carries `measured` (a validator
+reproduced it) or `inferred` (could not be run).
+
+**Who may run this for a gate.** A review that certifies a commit is run by a verifier that did not
+write it: `/pr` starts one with `scripts/verify_fresh.sh`, and that session follows `verifier.md`.
+An author running this skill on its own change gets advice, not a gate record (pstack `shipping.md`:
+"Only a verdict from an agent that did not write the code counts").
 
 ## Modes
 
@@ -118,18 +123,19 @@ First line: `PASS` / `ISSUES` / `BLOCKED` and the HEAD sha.
 This block is also the PR comment `/pr` posts. Raw reviewer outputs go in a collapsed appendix
 only when the user asks.
 
-**Gate record.** When the target was a commit (order 4, or a clean tree at HEAD), write the block to
-`$(git rev-parse --git-common-dir)/gate/<full HEAD sha>.review.md` (create the folder). Repos with a
-push gate (k-defense-kg `scripts/gate.py`) refuse to push a commit without it. Never write it for a
-staged or working-tree review — those do not certify a commit — and never write it by hand without
-the reviewers having run.
+**Gate record.** Only the verifier writes it, and only through `scripts/record_review.py`
+(see `verifier.md`, step 5). The script writes `<git common dir>/gate/<sha>.review.md` and refuses
+a record whose lanes did not all run on this commit, a P0/P1 without a validator verdict, or a
+missing live lane. Nobody writes or edits that file by hand. A staged or working-tree review never
+gets one — it does not certify a commit.
 
 ## Step 7 — Log for measuring the reviewer
 
-Append one row per shown finding to `~/.claude/review-log/<repo>.tsv` (create with a header):
-`date  sha  mode  id  severity  path:line  raised_by  validation  title`. Later, a finding counts
-as **fixed** if its lines change before merge. The fix rate per reviewer/model is the number to
-tune against (OpenAI reports 52.7%, Google ~40%, Meta 19.7% for their systems).
+`record_review.py` appends one row per finding to `~/.claude/review-log/<repo>.tsv`:
+`date  sha  mode  id  severity  path:line  raised_by  validation  title`. For a review outside a
+gate, append the same rows yourself. Later, a finding counts as **fixed** if its lines change
+before merge. The fix rate per reviewer/model is the number to tune against (OpenAI reports
+52.7%, Google ~40%, Meta 19.7% for their systems).
 
 ## Convergence
 
