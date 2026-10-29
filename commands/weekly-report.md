@@ -55,11 +55,22 @@ Then `Read` `~/.claude/memo.md`.
 **Next-week plan**:
 - Uncommitted changes, branches ahead of origin.
 - memo priority order: `blocker` > `bug` > `todo` > `refactor`.
-- 3–6 bullets, naturally written.
+- 3–6 bullets, naturally written, grouped under `[프로젝트명]` headers like the work section.
 
 ## 4. Output format (form-ready)
 
 **Critical**: each of the three wrapped in a fenced code block (```). Inside the block: only flat `- ` bullets — no nested indentation, no sub-bullets. (CLI markdown renderer indents nested lists, which leaks leading whitespace when copied.)
+
+**Project grouping** (work and next-week sections): write the project name once, alone on its own line as `[프로젝트명]`, then that project's `- ` bullets directly below it, then a blank line before the next project. Never repeat `[프로젝트명]` at the start of each bullet. Header and bullets both start at column 0.
+
+```
+[국방 사이버 지식그래프]
+- 첫 번째 성과 (N commits)
+- 두 번째 성과
+
+[보안 시뮬레이션 챗봇]
+- 성과
+```
 
 ```
 # 주간보고 — <today> (금주: <start> ~ <today>)
@@ -70,7 +81,7 @@ Then `Read` `~/.claude/memo.md`.
 
 ## 금주 주요 업무 내용 및 진행 현황
 
-[fenced code block with flat bullets]
+[fenced code block: `[프로젝트명]` header lines, each followed by flat bullets]
 
 ---
 
