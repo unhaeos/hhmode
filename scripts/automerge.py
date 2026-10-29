@@ -32,13 +32,18 @@ HEAD_RE = re.compile(r"^\*\*Review: (\w+)\*\* · ([0-9a-f]{7,40}) · (\w+)(?: ·
 
 
 def author_tier(body: str) -> str | None:
-    """The tier on the PR body's "Risk tier" line, or None unless exactly one tier word is there (the template's
-    `low | medium | high` placeholder must not read as low)."""
+    """The tier in the PR body's "Risk tier:" field (a line that starts with it, bold allowed), or None when there is
+    no such field, when it holds more than one tier word (the template's `low | medium | high` placeholder), or when
+    two fields disagree. Prose that merely mentions a risk tier does not count (GPT lane on 08df90d)."""
+    found = set()
     for line in (body or "").splitlines():
-        if "risk tier" in line.lower():
-            words = set(re.findall(r"\b(low|medium|high)\b", line.lower()))
-            return words.pop() if len(words) == 1 else None
-    return None
+        m = re.match(r"^\s*\**\s*risk tier\s*:(.*)$", line, re.I)
+        if m:
+            words = set(re.findall(r"\b(low|medium|high)\b", m.group(1).lower()))
+            if len(words) != 1:
+                return None
+            found |= words
+    return found.pop() if len(found) == 1 else None
 
 
 def gpt_tier(text: str) -> str | None:

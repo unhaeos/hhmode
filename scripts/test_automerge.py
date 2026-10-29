@@ -41,6 +41,13 @@ class Decide(unittest.TestCase):
         self.assertFalse(merge)
         self.assertTrue(any("작성자" in r for r in reasons))
 
+    # GPT lane on 08df90d: prose mentioning a tier must not shadow the field; two fields that disagree count as none.
+    def test_only_the_risk_tier_field_counts(self):
+        self.assertEqual(am.author_tier("Explain the low risk tier.\n**Risk tier: high** (gate)"), "high")
+        self.assertIsNone(am.author_tier("**Risk tier: low**\n...\nRisk tier: medium"))
+        self.assertIsNone(am.author_tier("We kept the risk tier low."))
+        self.assertEqual(am.author_tier("**Risk tier: low** (docs only)"), "low")
+
     # k-defense-kg #35: the author called a dependency pin low.
     def test_highest_tier_wins_over_the_authors(self):
         merge, reasons, _ = am.decide(pr(), [rec(tier="medium")])
