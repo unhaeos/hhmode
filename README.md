@@ -47,6 +47,7 @@ Nothing to start. The symlinks make every skill available in any directory where
 | Merge one reviewed PR (merge-owner session) | `/land <PR#>` |
 | Stress-test a plan before implementing | `/plan-review <path to plan>` |
 | Write up results as a document | ask for a report; the `report` skill loads on its own |
+| The last reply was hard to follow | `/bro`, or `/bro <the part>` |
 | Memo, to-do collection, weekly report, DM draft | `/mm`, `/collect-todos`, `/weekly-report`, `/slack-dm` |
 
 In Codex, `$hillclimb` and `$investigate` are available; the other skills depend on Claude Code tools.
@@ -102,6 +103,7 @@ Source: pstack v0.15.32, MIT. Each adapted file notes its origin at the bottom.
 | Three rules | `poteto-mode` router, `swarm`, `figure-it-out` | Three README lines instead of a 909-line router. Applied to `code-review` and `plan-review` as well. |
 | `log.md` | purpose of `reflect` / `recall` | Manual one-liners instead of transcript mining. |
 | `skills/correct` | skill `correct` (+ the transcript reading of `reflect`) — pstack c742dd6 | Inputs added: review-log, log.md; harness classes; a propose-then-approve step; proofs need a writable worktree, else BLOCKED. `reflect`'s three-lens fan-out not ported. |
+| `commands/bro.md` | skill `bro` — pstack c742dd6 | A Claude Code command instead of a skill. pstack's one-line prompt plus rules from the user's corrections: no coined labels, whole sentences, one concrete case, plain over short. |
 | `skills/code-review/verifier.md`, `scripts/verify_fresh.sh`, `scripts/record_review.py` | playbooks `shipping` (verifier lane), `autopilot-full` (live lane, "you own the verdicts, never the PRs") — pstack c742dd6 | One fresh headless session per commit instead of a cloud-agent swarm and a root agent. The verdict is enforced by a script and the push gate rather than by a root agent's audit. |
 
 Not taken: the router body, the other 20 playbooks, the other 20 principles, ~7k lines of scripts, the automation pack, `disable-model-invocation`.
