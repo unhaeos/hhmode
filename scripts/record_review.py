@@ -17,6 +17,7 @@ reviewed by two lanes when one had run, a P1 skipped its validator, and no revie
 reviewed commits. pstack: "Only a verdict from an agent that did not write the code counts."
 
 Usage: record_review.py --repo <worktree> --result <result.json> --report <report.md> --session <uuid>
+                        --mode standard|full
 """
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ REQUIRED = {
 }
 VALIDATED = {"CONFIRMED", "PLAUSIBLE", "REJECTED"}
 SERIOUS = {"P0", "P1"}
+SEVERITIES = {"P0", "P1", "P2", "P3", "rule"}
 
 
 class Refused(Exception):
@@ -65,7 +67,10 @@ def verify_verdict(gdir: pathlib.Path, sha: str) -> str:
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("sha") not in (sha, sha[:7]) and not str(data.get("sha", "")).startswith(sha[:7]):
         raise Refused(f"{path.name} names another commit ({data.get('sha')})")
-    return str(data.get("verdict", "")).upper()
+    verdict = str(data.get("verdict", "")).upper()
+    if verdict not in ("PASS", "FAIL", "BLOCKED"):
+        raise Refused(f"{path.name} has verdict {data.get('verdict')!r}; expected PASS, FAIL or BLOCKED")
+    return verdict
 
 
 def verify_from_lane(result: dict, sha: str) -> str:
@@ -119,6 +124,9 @@ def check(result: dict, sha: str, verify: str) -> str:
         blocked.append("verify: BLOCKED in the verify record")
     findings = result.get("findings", [])
     for f in findings:
+        # Exact values only: "p1" or "high" would otherwise slip past the validator check below.
+        if f.get("severity") not in SEVERITIES:
+            raise Refused(f"{f.get('id')} has severity {f.get('severity')!r}; use one of {sorted(SEVERITIES)}")
         if f.get("severity") in SERIOUS and f.get("validation") not in VALIDATED:
             raise Refused(f"{f.get('id')} is {f.get('severity')} without a validator verdict "
                           f"(got {f.get('validation')!r}) — spawn finding-validator for it")
@@ -132,11 +140,13 @@ def check(result: dict, sha: str, verify: str) -> str:
     return "PASS"
 
 
-def render(verdict: str, sha: str, result: dict, report: str, session: str) -> str:
+def render(verdict: str, sha: str, result: dict, report: str, session: str, verify: str) -> str:
     lanes = ",".join(f"{ln.get('lane')}@{(ln.get('sha') or '-')[:7]}:{ln.get('status')}"
                      for ln in result.get("lanes", []))
     head = f"**Review: {verdict}** · {sha[:7]} · {result['mode']} · verifier {session[:8]}"
-    return f"{head}\n\n{report.strip()}\n\n<!-- verifier-session: {session}; lanes: {lanes} -->\n"
+    # `verify:` lets the launcher print the Verify line for a repo that has no verify.json.
+    return (f"{head}\n\n{report.strip()}\n\n"
+            f"<!-- verifier-session: {session}; verify: {verify}; lanes: {lanes} -->\n")
 
 
 def log_rows(result: dict, sha: str, verdict: str) -> list[str]:
@@ -158,6 +168,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--result", required=True, type=pathlib.Path)
     ap.add_argument("--report", required=True, type=pathlib.Path)
     ap.add_argument("--session", required=True)
+    ap.add_argument("--mode", required=True, choices=sorted(REQUIRED),
+                    help="the mode the launcher asked for; the result must match it")
     ap.add_argument("--log-dir", type=pathlib.Path, default=pathlib.Path.home() / ".claude" / "review-log")
     a = ap.parse_args(argv)
 
@@ -166,6 +178,9 @@ def main(argv: list[str] | None = None) -> int:
     result = json.loads(a.result.read_text(encoding="utf-8"))
     gdir = gate_dir(repo)
     try:
+        # The launcher's mode, not the verifier's: a `full` request reported as `standard` would skip lanes.
+        if result.get("mode") != a.mode:
+            raise Refused(f"result.mode is {result.get('mode')!r} but the launcher asked for {a.mode!r}")
         has_verify_step = (repo / "scripts" / "verify.py").exists()
         verify = verify_verdict(gdir, sha) if has_verify_step else verify_from_lane(result, sha)
         verdict = check(result, sha, verify)
@@ -175,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
 
     gdir.mkdir(parents=True, exist_ok=True)
     out = gdir / f"{sha}.review.md"
-    out.write_text(render(verdict, sha, result, a.report.read_text(encoding="utf-8"), a.session),
+    out.write_text(render(verdict, sha, result, a.report.read_text(encoding="utf-8"), a.session, verify),
                    encoding="utf-8")
     a.log_dir.mkdir(parents=True, exist_ok=True)
     with (a.log_dir / f"{repo_name(repo)}.tsv").open("a", encoding="utf-8") as fh:
