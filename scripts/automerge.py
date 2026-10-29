@@ -28,6 +28,8 @@ import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent.parent          # hhmode root
 ORDER = {"low": 0, "medium": 1, "high": 2}
+TIER_KO = {"low": "낮음", "medium": "중간", "high": "높음"}
+VERDICT_KO = {"PASS": "통과", "ISSUES": "지적 있음", "BLOCKED": "못 돌림", "FAIL": "실패"}
 HEAD_RE = re.compile(r"^\*\*Review: (\w+)\*\* · ([0-9a-f]{7,40}) · (\w+)(?: · since ([0-9a-f]{7,40}))?")
 
 
@@ -47,8 +49,11 @@ def author_tier(body: str) -> str | None:
 
 
 def gpt_tier(text: str) -> str | None:
-    m = re.search(r"^## Tier\s*\n+\s*`*(low|medium|high)\b", text or "", re.M | re.I)
-    return m.group(1).lower() if m else None
+    """The tier on the line after `## Tier`, or None unless that line holds exactly one tier word (an unfilled
+    `low | medium | high` or `low-to-medium` must not read as low; verifier note on 08df90d)."""
+    m = re.search(r"^## Tier\s*\n+(.*)$", text or "", re.M | re.I)
+    words = set(re.findall(r"\b(low|medium|high)\b", m.group(1).lower())) if m else set()
+    return words.pop() if len(words) == 1 else None
 
 
 def record_fields(text: str) -> dict:
@@ -59,9 +64,11 @@ def record_fields(text: str) -> dict:
 
 
 def checks_state(rollup: list) -> str:
-    """`ok`, `pending` or `failing` for GitHub's statusCheckRollup. No checks at all (hhmode has no CI) is ok."""
+    """`none` (no checks; hhmode has no CI), `ok`, `pending` or `failing` for GitHub's statusCheckRollup."""
+    if not rollup:
+        return "none"
     state = "ok"
-    for c in rollup or []:
+    for c in rollup:
         status = (c.get("status") or "").upper()
         concl = (c.get("conclusion") or c.get("state") or "").upper()
         if concl in {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}:
@@ -71,10 +78,13 @@ def checks_state(rollup: list) -> str:
     return state
 
 
-def decide(pr: dict, records: list[dict]) -> tuple[bool, list[str], dict]:
+def decide(pr: dict, records: list[dict]) -> tuple[bool, list[str], dict, dict]:
     """Pure. `records`: the head commit's first, then each `since` ancestor's, each {review, verify, tier, gpt}.
-    Returns (merge, reasons it may not, tiers seen)."""
+    Returns (merge, reasons it may not, tiers seen, state of each check), worded for the user."""
     reasons, head = [], records[0]
+    status = {"review": VERDICT_KO.get(head["review"], head["review"] or "기록 없음"),
+              "verify": VERDICT_KO.get(head["verify"], head["verify"] or "기록 없음"),
+              "ci": checks_state(pr.get("statusCheckRollup")), "mergeable": pr.get("mergeable")}
     if pr.get("state") != "OPEN":
         reasons.append(f"PR이 열려 있지 않음({pr.get('state')})")
     if pr.get("baseRefName") != "main":
@@ -82,26 +92,29 @@ def decide(pr: dict, records: list[dict]) -> tuple[bool, list[str], dict]:
         # (GPT lane, 2026-10-29).
         reasons.append(f"병합 대상이 main 이 아님({pr.get('baseRefName')}) — 리뷰는 main 기준")
     if head["review"] != "PASS":
-        reasons.append(f"리뷰 {head['review'] or '기록 없음'}")
+        reasons.append(f"리뷰 {status['review']}")
     if head["verify"] != "PASS":
-        reasons.append(f"검증 {head['verify'] or '기록 없음'}")
-    tiers = {"작성자": author_tier(pr.get("body", ""))}
+        reasons.append(f"검증 {status['verify']}")
+    tiers = {"PR 쓴 에이전트": author_tier(pr.get("body", ""))}
+    if tiers["PR 쓴 에이전트"] is None:
+        reasons.append("PR 본문의 위험도 칸이 없거나 비어 있음")
     for i, r in enumerate(records):
         tag = "" if i == 0 else f"({r.get('sha', '')[:7]})"
-        tiers[f"검증기{tag}"] = r["tier"]
-        tiers[f"GPT{tag}"] = r["gpt"]
-    missing = [k for k, v in tiers.items() if v not in ORDER]
-    if missing:
-        reasons.append("등급 없음: " + ", ".join(missing))
+        tiers[f"Claude 검증{tag}"] = r["tier"]
+        tiers[f"Codex 리뷰{tag}"] = r["gpt"]
+        if r["tier"] is None:
+            reasons.append(f"Claude 검증{tag} 기록 없음" if r["review"] is None
+                           else f"Claude 검증{tag} 기록에 위험도가 없음(위험도 칸이 생기기 전 기록)")
+        if r["gpt"] is None:
+            reasons.append(f"이 검증{tag}에서 Codex 리뷰가 돌지 않았거나 위험도를 못 읽음")
     top = max((v for v in tiers.values() if v in ORDER), key=ORDER.get, default=None)
     if top and top != "low":
-        reasons.append(f"등급 {top}")
+        reasons.append(f"위험도 {TIER_KO[top]}")
     if pr.get("mergeable") != "MERGEABLE":
         reasons.append(f"병합 불가 상태({pr.get('mergeable')})")
-    ci = checks_state(pr.get("statusCheckRollup"))
-    if ci != "ok":
-        reasons.append({"failing": "CI 실패", "pending": "CI 진행 중"}[ci])
-    return (not reasons, reasons, tiers)
+    if status["ci"] in {"pending", "failing"}:
+        reasons.append({"failing": "CI 실패", "pending": "CI 진행 중"}[status["ci"]])
+    return (not reasons, reasons, tiers, status)
 
 
 def gh(*args: str, cwd: pathlib.Path) -> str:
@@ -123,17 +136,34 @@ def load_records(gate: pathlib.Path, sha: str) -> list[dict]:
     return out
 
 
-def message(pr: dict, merge: bool, reasons: list[str], tiers: dict, mode: str, merged_sha: str | None) -> str:
-    tier_s = ", ".join(f"{k} {v or '없음'}" for k, v in tiers.items())
-    title = f"#{pr['number']} {pr['title']}"
-    if merge and merged_sha:
-        return (f"*자동 병합* {title}\n• 근거: 리뷰·검증 PASS, 등급 {tier_s}, CI 통과\n"
-                f"• 되돌리기: `git revert {(merged_sha or '?')[:7]}` 또는 PR 화면의 Revert\n{pr['url']}")
-    if merge:
-        why = "[dry-run]" if mode == "dry-run" else "[시험 운영]"
-        return (f"*{why} 자동 병합 대상이었음* {title} — 실제 병합은 안 함\n"
-                f"• 근거: 리뷰·검증 PASS, 등급 {tier_s}, CI 통과\n{pr['url']}")
-    return f"*확인 필요* {title}\n• 이유: {'; '.join(reasons)}\n• 등급: {tier_s}\n{pr['url']}"
+CI_KO = {"none": "없음", "ok": "통과", "pending": "진행 중", "failing": "실패"}
+MERGEABLE_KO = {"MERGEABLE": "충돌 없음", "CONFLICTING": "충돌 있음", "UNKNOWN": "충돌 여부 확인 중"}
+
+
+def message(pr: dict, merge: bool, reasons: list[str], tiers: dict, status: dict, mode: str,
+            merged_sha: str | None, error: str | None = None) -> str:
+    m = re.search(r"github\.com/[^/]+/([^/]+)/pull/", pr.get("url", ""))
+    repo = m.group(1) if m else "?"
+    if error:
+        head = "자동 병합 실패"
+    elif merge and merged_sha:
+        head = "자동 병합"
+    elif merge:
+        head = ("[dry-run]" if mode == "dry-run" else "[시험 운영]") + " 자동 병합 대상(실제 병합은 안 함)"
+    else:
+        head = "확인 필요"
+    lines = [f"*[{repo} #{pr['number']}] {head}* — {pr['title']}",
+             f"• 리뷰 {status['review']} · 테스트 {status['verify']} · CI {CI_KO.get(status['ci'], status['ci'])}"
+             f" · {MERGEABLE_KO.get(status['mergeable'], status['mergeable'])}",
+             "• 위험도(셋 다 '낮음'이어야 자동 병합): "
+             + " · ".join(f"{k} {TIER_KO.get(v, '없음')}" for k, v in tiers.items())]
+    if error:
+        lines.append(f"• 병합 명령이 실패함: {error}")
+    elif merged_sha:
+        lines.append(f"• 되돌리기: `git revert {merged_sha[:7]}` 또는 PR 화면의 Revert")
+    elif not merge:
+        lines.append("• 자동 병합 안 한 이유: " + ", ".join(reasons))
+    return "\n".join(lines + [pr["url"]])
 
 
 def post_slack(text: str) -> str:
@@ -163,20 +193,30 @@ def main(argv: list[str] | None = None) -> int:
     common = subprocess.run(["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
                             check=True, capture_output=True, text=True).stdout.strip()
     records = load_records(pathlib.Path(common) / "gate", pr["headRefOid"])
-    merge, reasons, tiers = decide(pr, records)
+    merge, reasons, tiers, status = decide(pr, records)
     mode_file = HERE / "local" / "automerge"
     mode = mode_file.read_text().strip() if mode_file.exists() else "shadow"
 
-    merged_sha = None
+    merged_sha = error = None
     if merge and mode == "on" and not a.dry_run:
-        gh("pr", "merge", str(a.pr), "--squash", "--match-head-commit", pr["headRefOid"], cwd=repo)
-        merged_sha = json.loads(gh("pr", "view", str(a.pr), "--json", "mergeCommit", cwd=repo))["mergeCommit"]["oid"]
-    text = message(pr, merge, reasons, tiers, "dry-run" if a.dry_run else mode, merged_sha)
+        # Branch protection, a draft, or a push after the review make the merge fail: report it, do not stop silently
+        # (verifier note on 08df90d).
+        try:
+            gh("pr", "merge", str(a.pr), "--squash", "--match-head-commit", pr["headRefOid"], cwd=repo)
+            merged_sha = json.loads(gh("pr", "view", str(a.pr), "--json", "mergeCommit",
+                                       cwd=repo))["mergeCommit"]["oid"]
+        except subprocess.CalledProcessError as e:
+            error = ((e.stderr or "").strip().splitlines() or [str(e)])[-1][:300]
+    text = message(pr, merge, reasons, tiers, status, "dry-run" if a.dry_run else mode, merged_sha, error)
     print(text)
     if not a.dry_run:
-        print(f"[slack] {post_slack(text)}")
+        try:
+            print(f"[slack] {post_slack(text)}")
+        except Exception as e:                          # after a merge, a Slack failure must not hide it
+            print(f"[slack] not sent: {e}")
     shown = "dry-run" if a.dry_run else mode
-    verdict = "MERGED" if merged_sha else (f"WOULD MERGE ({shown}, not merged)" if merge else "TO USER")
+    verdict = ("MERGE FAILED" if error else "MERGED" if merged_sha
+               else f"WOULD MERGE ({shown}, not merged)" if merge else "TO USER")
     print(f"automerge: {verdict} · #{a.pr} · {pr['headRefOid'][:7]} · mode {mode}")
     return 0
 
