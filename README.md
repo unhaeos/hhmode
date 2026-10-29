@@ -11,7 +11,7 @@ skills/        One SKILL.md per skill. Symlinked into ~/.claude/skills/<name> an
 agents/        Subagent definitions (reviewers). Symlinked into ~/.claude/agents/<name>.md.
 commands/      Claude Code slash commands (Claude Code only). ~/.claude/commands -> this folder.
 principles/    One principle per file. Skills reference them by absolute path.
-scripts/       Checks the harness runs instead of trusting text: verify_fresh.sh, record_review.py (+ tests).
+scripts/       Checks the harness runs instead of trusting text: verify_fresh.sh, record_review.py, sync_self.sh (+ tests).
 log.md         Failure log, one line per incident.
 local/         Machine-local values (identity, paths). Gitignored.
 ```
@@ -31,6 +31,15 @@ for s in hillclimb investigate; do ln -sfn ~/projects/hhmode/skills/$s ~/.codex/
 ln -sfn ~/projects/hhmode/commands ~/.claude/commands
 for a in ~/projects/hhmode/agents/*.md; do ln -sfn "$a" ~/.claude/agents/$(basename "$a"); done
 ```
+
+Then register `scripts/sync_self.sh` as a SessionStart hook in `~/.claude/settings.json`, so a merged PR reaches every new session without a manual pull: the checkout fast-forwards to `origin/main` (only on a clean `main`) and new skills and agents get their links. It prints one line when it changed something. Tests: `python3 -m unittest scripts/test_sync_self.py`.
+
+```json
+"SessionStart": [{"hooks": [{"type": "command", "timeout": 15,
+  "command": "sh -c '[ -f \"$HOME/projects/hhmode/scripts/sync_self.sh\" ] || exit 0; exec bash \"$HOME/projects/hhmode/scripts/sync_self.sh\"'"}]}]
+```
+
+The `[ -f ] || exit 0` wrapper keeps a missing script from breaking session start (same as k-defense-kg's hooks).
 
 Machine-local values go in `local/` (gitignored); see `commands/*.md` for what they read.
 
