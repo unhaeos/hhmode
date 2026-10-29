@@ -74,7 +74,7 @@ Where the model reads them: rules 2 and 3 live in `~/.claude/CLAUDE.md` (loaded 
 | Item | Claude Code | Codex |
 |---|---|---|
 | `hillclimb`, `investigate` | yes | yes |
-| `code-review`, `plan-review` | yes (spawns subagents via the Agent tool) | no |
+| `code-review`, `plan-review`, `correct` | yes (spawns subagents via the Agent tool) | no |
 | `report` | yes (uses the Artifact tool) | no |
 | `commands/*` | yes | no |
 
@@ -87,6 +87,7 @@ Where the model reads them: rules 2 and 3 live in `~/.claude/CLAUDE.md` (loaded 
 | `code-review` | Opus bug reviewer (repo access, may run tests) + Sonnet rules reviewer; every P0/P1 re-checked by an Opus validator that tries to reproduce it; runs on every PR via `/pr`; full mode adds diff-only and Fable reviewers. |
 | `plan-review` | One repo-reading reviewer checks the plan's assumptions, order, verification and irreversible steps against the code; open questions come back as experiments. No design debate (pstack: review the diff, not the plan). |
 | `report` | House style for written reports as HTML artifacts. |
+| `correct` | Find mistakes agents keep repeating (review-log, log.md, git history, rule files, optionally transcripts); a class counts at two occurrences; fix at the highest level that works and prove the check fails on a real past mistake; propose, then apply after approval. |
 
 ## Taken from pstack
 
@@ -99,6 +100,7 @@ Source: pstack v0.15.32, MIT. Each adapted file notes its origin at the bottom.
 | `principles/` (4) | `prove-it-works`, `explain-the-number`, `attack-the-premise`, `encode-lessons-in-structure` | Shortened. Cross-skill links removed. |
 | Three rules | `poteto-mode` router, `swarm`, `figure-it-out` | Three README lines instead of a 909-line router. Applied to `code-review` and `plan-review` as well. |
 | `log.md` | purpose of `reflect` / `recall` | Manual one-liners instead of transcript mining. |
+| `skills/correct` | skill `correct` (+ the transcript reading of `reflect`) — pstack c742dd6 | Inputs added: review-log, log.md; harness classes; a propose-then-approve step; proofs need a writable worktree, else BLOCKED. `reflect`'s three-lens fan-out not ported. |
 | `skills/code-review/verifier.md`, `scripts/verify_fresh.sh`, `scripts/record_review.py` | playbooks `shipping` (verifier lane), `autopilot-full` (live lane, "you own the verdicts, never the PRs") — pstack c742dd6 | One fresh headless session per commit instead of a cloud-agent swarm and a root agent. The verdict is enforced by a script and the push gate rather than by a root agent's audit. |
 
 Not taken: the router body, the other 20 playbooks, the other 20 principles, ~7k lines of scripts, the automation pack, `disable-model-invocation`.
