@@ -28,6 +28,7 @@ import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent.parent          # hhmode root
 ORDER = {"low": 0, "medium": 1, "high": 2}
+UNKNOWN = "unknown"                 # merged, but the merge commit could not be read back
 TIER_KO = {"low": "낮음", "medium": "중간", "high": "높음"}
 VERDICT_KO = {"PASS": "통과", "ISSUES": "지적 있음", "BLOCKED": "못 돌림", "FAIL": "실패"}
 HEAD_RE = re.compile(r"^\*\*Review: (\w+)\*\* · ([0-9a-f]{7,40}) · (\w+)(?: · since ([0-9a-f]{7,40}))?")
@@ -159,6 +160,8 @@ def message(pr: dict, merge: bool, reasons: list[str], tiers: dict, status: dict
              + " · ".join(f"{k} {TIER_KO.get(v, '없음')}" for k, v in tiers.items())]
     if error:
         lines.append(f"• 병합 명령이 실패함: {error}")
+    elif merged_sha == UNKNOWN:
+        lines.append("• 병합은 됐지만 병합 커밋 번호를 못 읽음. 되돌리기는 PR 화면의 Revert")
     elif merged_sha:
         lines.append(f"• 되돌리기: `git revert {merged_sha[:7]}` 또는 PR 화면의 Revert")
     elif not merge:
@@ -203,10 +206,15 @@ def main(argv: list[str] | None = None) -> int:
         # (verifier note on 08df90d).
         try:
             gh("pr", "merge", str(a.pr), "--squash", "--match-head-commit", pr["headRefOid"], cwd=repo)
-            merged_sha = json.loads(gh("pr", "view", str(a.pr), "--json", "mergeCommit",
-                                       cwd=repo))["mergeCommit"]["oid"]
         except subprocess.CalledProcessError as e:
             error = ((e.stderr or "").strip().splitlines() or [str(e)])[-1][:300]
+        if not error:
+            # The merge happened; a failed lookup after it must not read as a failed merge (verifier note on f07e72f).
+            try:
+                merged_sha = json.loads(gh("pr", "view", str(a.pr), "--json", "mergeCommit",
+                                           cwd=repo))["mergeCommit"]["oid"]
+            except (subprocess.CalledProcessError, KeyError, TypeError, ValueError):
+                merged_sha = UNKNOWN
     text = message(pr, merge, reasons, tiers, status, "dry-run" if a.dry_run else mode, merged_sha, error)
     print(text)
     if not a.dry_run:

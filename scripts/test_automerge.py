@@ -168,6 +168,39 @@ class Message(unittest.TestCase):
         self.assertIn("자동 병합 실패", text)
         self.assertIn("Pull request is in draft", text)
 
+    # Verifier note on f07e72f (P2): the merge went through, the lookup after it failed, and it read as a failure.
+    def test_merge_then_failed_lookup_reads_as_merged(self):
+        import contextlib, io, json as js, subprocess
+        here = pathlib.Path(tempfile.mkdtemp())
+        repo = here / "repo"
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (here / "local").mkdir()
+        (here / "local" / "automerge").write_text("on\n")
+        calls = []
+
+        def fake_gh(*args, cwd):
+            calls.append(args[:2])
+            if args[:2] == ("pr", "merge"):
+                return ""
+            if "mergeCommit" in args:
+                raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 502: Bad Gateway")
+            return js.dumps(pr())
+        saved = (am.gh, am.load_records, am.HERE)
+        am.gh, am.load_records, am.HERE = fake_gh, (lambda gate, sha: [rec()]), here
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = am.main(["12", "--repo", str(repo)])
+        finally:
+            am.gh, am.load_records, am.HERE = saved
+        text = out.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn(("pr", "merge"), calls)
+        self.assertIn("자동 병합*", text)
+        self.assertIn("병합은 됐지만 병합 커밋 번호를 못 읽음", text)
+        self.assertNotIn("실패", text)
+        self.assertIn("automerge: MERGED", text)
+
     def test_to_user_names_the_reasons(self):
         text = am.message(pr(), False, ["위험도 중간", "CI 실패"], self.TIERS, STATUS, "shadow", None)
         self.assertIn("확인 필요", text)
