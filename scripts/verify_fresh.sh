@@ -34,7 +34,10 @@ fi
 if [ -e "$vdir" ]; then git -C "$main_repo" worktree remove --force "$vdir" 2>/dev/null || rm -rf "$vdir"; fi
 git -C "$main_repo" worktree add -q --detach "$vdir" "$sha"
 cleanup() {
-  if [ "${KEEP:-0}" != "1" ]; then git -C "$main_repo" worktree remove --force "$vdir" 2>/dev/null || true; fi
+  if [ "${KEEP:-0}" != "1" ]; then
+    git -C "$main_repo" worktree remove --force "$vdir" 2>/dev/null || true
+    rm -rf "$vdir.live"
+  fi
 }
 trap cleanup EXIT
 
@@ -46,9 +49,16 @@ work="$vdir/.verify"
 mkdir -p "$work"
 record="python3 $here/scripts/record_review.py --repo $vdir --result $work/result.json --report $work/report.md --session $session --mode $mode"
 py=python3; [ -x "$main_repo/.venv/bin/python" ] && py="$main_repo/.venv/bin/python"
+# Commands, skills and agents this commit changes, staged as <name>-new outside the worktree for the live lane.
+staged=$(bash "$here/scripts/stage_live_claude.sh" "$vdir" "$vdir.live" "$work/ask.sh" 2>"$work/stage.err") || staged=""
 prompt="Verify commit $sha. Your working directory $vdir is a fresh worktree at that commit; base is origin/main. \
 Mode: $mode. Your session id: $session. Python for .verify/ scripts and tests: $py. \
 Write result.json and report.md in $work, then run exactly: $record"
+if [ -n "$staged" ]; then
+  prompt="$prompt
+This commit changes Claude Code files, staged for the live lane as: $(printf '%s' "$staged" | paste -sd ',' -). \
+Try them with bash .verify/ask.sh (verifier.md step 4)."
+fi
 
 # Least privilege: the verifier reads, runs the repo's own checks, starts this worktree's servers, and writes its two
 # output files plus the record (through record_review.py). It gets no general shell and no Edit.
@@ -72,6 +82,8 @@ tools=(
   "Bash($main_repo/.venv/bin/python -m pip show:*)"
   "Bash($main_repo/.venv/bin/python -m pip install --dry-run:*)"
 )
+# The helper that runs a fresh `claude -p` in the staged folder, only when something was staged.
+[ -n "$staged" ] && tools+=("Bash(bash .verify/ask.sh:*)")
 
 # VERIFIER_READ_DIRS: extra directories the verifier may read (space-separated), for a change whose live lane
 # must read real inputs outside the worktree — e.g. a skill that reads ~/.claude/review-log. Read access only:

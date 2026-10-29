@@ -42,8 +42,12 @@ run it with `<python> .verify/<name>.py`.
      "hard to simulate" is not a reason. If an element is "not visible", check the viewport and layout before
      concluding anything.
    - Agent or prompt change: one real question through the API that only this change can answer.
-   - Change to a Claude Code skill, command or agent file: this session cannot start another `claude` or write
-     under `.claude/`. Do not try. Set live `blocked` with that reason; the author's own run belongs in the PR.
+   - Change to a Claude Code skill, command or agent file: the launcher installs this commit's versions as
+     `<name>-new` in a scratch folder (the prompt lists them) and gives you `.verify/ask.sh`, which runs a fresh
+     `claude -p` there. `bash .verify/ask.sh "<prompt>"` starts a session and `bash .verify/ask.sh --resume
+     <session_id> "<prompt>"` continues it; the JSON reply has `session_id` and `result`. Call the new version as
+     `/<name>-new` and set up what it needs first (for `/bro`, one ordinary question before it). Paste each prompt
+     and reply. Do not start `claude` or write under `.claude/` yourself; both are refused.
    - Docs-, test- or comment-only change: lane status `not-applicable` with that reason.
    Stop every server you started by PID (`ss -ltnp` to find it), never with `pkill -f`.
 
