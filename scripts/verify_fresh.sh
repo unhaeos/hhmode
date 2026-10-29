@@ -23,7 +23,14 @@ common="$(git -C "$src" rev-parse --git-common-dir)"
 case "$common" in /*) ;; *) common="$(cd "$src" && cd "$common" && pwd)" ;; esac
 main_repo="$(dirname "$common")"
 
-vdir="$main_repo/.claude/worktrees/verify-${sha:0:7}"
+# k-defense-kg expects task worktrees under .claude/worktrees (wt_env.sh assigns ports there). Any other repo gets
+# the verifier worktree outside itself, so a run never leaves files in a repo that is live (hhmode is symlinked
+# into ~/.claude).
+if [ -f "$main_repo/scripts/agents/wt_env.sh" ]; then
+  vdir="$main_repo/.claude/worktrees/verify-${sha:0:7}"
+else
+  vdir="${TMPDIR:-/tmp}/verify-$(basename "$main_repo")-${sha:0:7}"
+fi
 if [ -e "$vdir" ]; then git -C "$main_repo" worktree remove --force "$vdir" 2>/dev/null || rm -rf "$vdir"; fi
 git -C "$main_repo" worktree add -q --detach "$vdir" "$sha"
 cleanup() {
@@ -37,7 +44,7 @@ if [ -f "$vdir/scripts/agents/wt_env.sh" ]; then (cd "$vdir" && bash scripts/age
 session="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 work="$vdir/.verify"
 mkdir -p "$work"
-record="python3 $here/scripts/record_review.py --repo $vdir --result $work/result.json --report $work/report.md --session $session"
+record="python3 $here/scripts/record_review.py --repo $vdir --result $work/result.json --report $work/report.md --session $session --mode $mode"
 prompt="Verify commit $sha. Your working directory $vdir is a fresh worktree at that commit; base is origin/main. \
 Mode: $mode. Your session id: $session. Write result.json and report.md in $work, then run exactly: $record"
 
@@ -84,14 +91,21 @@ echo "record: $rec"
 # The PR body's Review/Verify lines, taken from the records the verifier produced — the author pastes these
 # instead of typing a verdict.
 python3 - "$rec" "$common/gate/$sha.verify.json" <<'PY'
-import json, sys
+import json, re, sys
 rec, vjson = sys.argv[1], sys.argv[2]
+text = open(rec, encoding="utf-8").read()
 print("\n--- paste into the PR body (Verification) ---")
-print(open(rec, encoding="utf-8").readline().strip())
+print(text.splitlines()[0].strip())
 try:
     v = json.load(open(vjson, encoding="utf-8"))
 except OSError:
-    print("**Verify: BLOCKED** · no verify record"); sys.exit(0)
+    # No verify.json: the repo has no verify step and the verifier's own test lane decided (record_review.py
+    # wrote that verdict into the record's provenance comment).
+    m = re.search(r"verify: (PASS|FAIL|BLOCKED);", text)
+    sha7 = text.split("·")[1].strip() if "·" in text else "?"
+    print(f"**Verify: {m.group(1) if m else 'BLOCKED'}** · {sha7} · verifier's test lane (no scripts/verify.py)"
+          " — command and output in the record")
+    sys.exit(0)
 print(f"**Verify: {v['verdict']}** · {v['sha'][:7]} · patch {v['patch'][:12]} · base main {v['base'][:7]}"
       f" · {v.get('changed', '?')} files changed · `python3 scripts/verify.py`\n")
 print("| Check | Result | Time | Detail |\n|---|---|---|---|")

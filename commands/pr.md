@@ -17,9 +17,8 @@ Turn the current branch into a reviewable pull request. One task, one branch, on
    `bash ~/projects/hhmode/scripts/verify_fresh.sh <this worktree> standard` (`full` when the tier is high)
    It starts a new headless session that never saw the change being written (`skills/code-review/verifier.md`). That session runs the repo's verify step, the review lanes and a live lane, and writes the review record itself through `scripts/record_review.py`, which refuses records that overclaim. Only a verdict from an agent that did not write the code counts (pstack `shipping.md`): **for a gate, never run the `code-review` skill on your own change, and never write or edit `<sha>.review.md` or `<sha>.verify.json` yourself.**
    It prints the Review and Verify lines to paste into the PR body. On `ISSUES`, fix and run it again on the new head (at most three rounds), or open the PR with the verdict as it is and say why. Before the first push you may amend; after a push, every fix is a new commit. On `NO RECORD` or `BLOCKED`, read the reason it prints and fix that; do not work around it.
-5. **Push.** A task branch is pushed without asking (user decision 2026-10-28). Never push main, never `--force`.
-6. **Push.** `git push -u origin <branch>`.
-7. **Open the PR.** `gh pr create --base main --title "<commit subject>" --body-file <tmp>` with this body, every section filled:
+5. **Push.** `git push -u origin <branch>`. A task branch is pushed without asking (user decision 2026-10-28). Never push main, never `--force`.
+6. **Open the PR.** `gh pr create --base main --title "<commit subject>" --body-file <tmp>` with this body, every section filled:
 
    ```
    ## What
@@ -47,9 +46,9 @@ Turn the current branch into a reviewable pull request. One task, one branch, on
    <follow-ups deliberately left out>
    ```
 
-8. **Post the verifier's record on the PR.** `gh pr comment <number> --body-file <git common dir>/gate/<sha>.review.md` — the file the verifier wrote, unedited. The comment names the commit it reviewed; a later push makes it stale, and the next `/pr` run posts a new one.
+7. **Post the verifier's record on the PR.** `gh pr comment <number> --body-file <git common dir>/gate/<sha>.review.md` — the file the verifier wrote, unedited. The comment names the commit it reviewed; a later push makes it stale, and the next `/pr` run posts a new one.
    **Updating an open PR** (new commits after review fixes): re-run step 4 for the new head, then `gh pr edit <number> --body-file <tmp>` with the new `Review:`/`Verify:` lines **before** pushing, then push. A gated repo's CI ("리뷰·검증 관문") reads the body and is red while the lines name an older commit.
-9. **Report.** Print the PR URL, the verdict line, and anything the reviewer must look at first.
+8. **Report.** Print the PR URL, the verdict line, and anything the reviewer must look at first.
 
 ## Rules
 
