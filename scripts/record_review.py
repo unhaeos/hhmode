@@ -37,15 +37,17 @@ import sys
 # log (88 rows, 2026-10-29) it raised 5 findings and no P0/P1; the full-context Opus lane raised about 10 P0/P1 and
 # Fable 2-3 that Opus did not. It was dropped.
 REQUIRED = {
-    "standard": ("bug", "rules", "verify", "live"),
-    "full": ("bug", "rules", "bug-fable", "verify", "live"),
+    "standard": ("bug", "rules", "bug-gpt", "verify", "live"),
+    "full": ("bug", "rules", "bug-fable", "bug-gpt", "verify", "live"),
 }
+# bug-gpt is a reviewer from another company (Codex), in both modes: every other lane is an Anthropic model, and a
+# same-family reviewer shares the author's blind spots (pstack runs Opus with Grok in its reviewer panels).
 VALIDATED = {"CONFIRMED", "PLAUSIBLE", "REJECTED"}
 SERIOUS = {"P0", "P1"}
 SEVERITIES = {"P0", "P1", "P2", "P3", "rule"}
 # Who raised a finding: lane names, joined with "+" when several raised it. The log had 25 spellings of four
 # reviewers ("opus", "Opus", "Opusfull", "Fable)", ...), so the fix rate per reviewer could not be counted.
-RAISERS = {"bug", "rules", "bug-fable", "live", "verify"}
+RAISERS = {"bug", "rules", "bug-fable", "bug-gpt", "live", "verify"}
 
 
 class Refused(Exception):
