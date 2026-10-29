@@ -93,10 +93,13 @@ PY
 gpt="$work/gpt-review.md"
 gpt_status="not run (dry run)"
 if [ "${PRINT_PROMPT:-0}" != "1" ]; then
-  gbase="${since:-$(git -C "$vdir" merge-base origin/main HEAD)}"
-  python3 "$here/scripts/gpt_review_input.py" "$vdir" "$gbase" > "$work/gpt-input.md"
+  gbase="${since:-$(git -C "$vdir" merge-base origin/main HEAD 2>/dev/null || true)}"
   if ! command -v codex >/dev/null; then
     gpt_status="blocked: codex CLI not installed"
+  elif [ -z "$gbase" ]; then
+    gpt_status="blocked: no origin/main to diff against"
+  elif ! python3 "$here/scripts/gpt_review_input.py" "$vdir" "$gbase" > "$work/gpt-input.md" 2> "$work/gpt-input.err"; then
+    gpt_status="blocked: building the input failed, see $work/gpt-input.err"
   elif timeout 1500 codex exec -s read-only --ephemeral -C "$vdir" -c 'model_reasoning_effort="high"' \
          -o "$gpt" "$(cat "$here/skills/code-review/gpt-reviewer.md")" < "$work/gpt-input.md" \
          > "$work/gpt-review.log" 2>&1 && [ -s "$gpt" ]; then

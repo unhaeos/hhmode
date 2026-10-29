@@ -40,6 +40,29 @@ class Build(unittest.TestCase):
         self.assertEqual(out.count("x = 2"), 100)        # 50 lines in the diff, 50 in the whole file
         self.assertNotIn("### gone.py", out)
 
+    def test_a_symlink_to_an_outside_file_is_not_sent(self):
+        # independent review of ac095e1: read_text followed a committed link and put an outside file into the input
+        secret = pathlib.Path(self.tmp.name).parent / f"secret-{pathlib.Path(self.tmp.name).name}"
+        secret.write_text("TOKEN=abc123\n", encoding="utf-8")
+        self.addCleanup(secret.unlink)
+        (self.repo / "link").symlink_to(secret)
+        self.git("add", "link")
+        self.git("commit", "-qm", "link")
+        out = gi.build(self.repo, self.base)
+        self.assertNotIn("abc123", out)
+        self.assertIn("(symlink or outside the repo, not included)", out)
+
+    def test_a_non_utf8_file_does_not_stop_the_input(self):
+        (self.repo / "keep.py").write_bytes("# caf\xe9\n".encode("latin-1"))
+        self.git("commit", "-qam", "latin1")
+        self.assertIn("### keep.py", gi.build(self.repo, self.base))
+
+    def test_a_non_ascii_name_is_read(self):
+        (self.repo / "한글.md").write_text("내용\n", encoding="utf-8")
+        self.git("add", ".")
+        self.git("commit", "-qm", "ko")
+        self.assertIn("### 한글.md\n\n```\n내용", gi.build(self.repo, self.base))
+
     def test_long_files_are_cut_and_say_so(self):
         (self.repo / "keep.py").write_text("y" * (gi.FILE_CAP + 10), encoding="utf-8")
         self.git("commit", "-qam", "long")
