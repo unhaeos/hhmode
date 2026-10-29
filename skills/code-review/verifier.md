@@ -17,8 +17,10 @@ output files, and the exact `record_review.py` command to run at the end.
 
 2. **Verify lane.** Run the repo's verify step on this commit. In k-defense-kg that is
    `python3 scripts/verify.py` (it writes `<gate>/<sha>.verify.json` itself and may take long: run it in the
-   background and wait). Never write a verify record by hand. If the repo has no verify step, run the tests
-   its CLAUDE.md lists, put the output in the report, and mark the verify lane `blocked` with the reason.
+   background and wait). Never write a verify record by hand. If the repo has no `scripts/verify.py`, run its
+   tests yourself (what its CLAUDE.md or README lists; otherwise `python3 -m unittest discover -s scripts -p
+   'test_*.py'`) and report a `verify` lane: `status: ran`, `verdict: PASS` or `FAIL`, `evidence`: the command
+   and its summary line. If no test can be run, `status: blocked` with the reason.
 
 3. **Review lanes.** Follow the `code-review` skill, Steps 2–4, yourself: spawn `bug-reviewer` (lane `bug`)
    and `rules-reviewer` (lane `rules`); in `full` mode also a `bug-reviewer` given only the diff (lane

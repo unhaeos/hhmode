@@ -114,6 +114,9 @@ class EndToEnd(unittest.TestCase):
                                   check=True, capture_output=True, text=True).stdout.strip()
         self.gate = self.repo / ".git" / "gate"
         self.gate.mkdir()
+        (self.repo / "scripts").mkdir()
+        self.verify_py = self.repo / "scripts" / "verify.py"     # a gated repo, like k-defense-kg
+        self.verify_py.write_text("", encoding="utf-8")
         self.logs = root / "logs"
         self.res = root / "result.json"
         self.rep = root / "report.md"
@@ -152,6 +155,35 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(self._main(), 2)
         self.assertFalse((self.gate / f"{self.sha}.review.md").exists())
         self.assertFalse((self.logs / "myrepo.tsv").exists())
+
+    # A repo with no verify step (hhmode itself): the verifier's own test run is the verify lane.
+    def _write_no_verify_step(self, verify_lane):
+        self.verify_py.unlink()
+        lanes = [{**ln, "sha": self.sha} for ln in result()["lanes"]]
+        if verify_lane is not None:
+            lanes.append({"sha": self.sha, **verify_lane, "lane": "verify"})
+        self.res.write_text(json.dumps(result(sha=self.sha, lanes=lanes)), encoding="utf-8")
+
+    def test_no_verify_step_uses_the_verifiers_test_lane(self):
+        self._write_no_verify_step({"status": "ran", "verdict": "PASS",
+                                    "evidence": "python3 -m unittest -> Ran 17 tests OK"})
+        self.assertEqual(self._main(), 0)
+        rec = (self.gate / f"{self.sha}.review.md").read_text(encoding="utf-8")
+        self.assertTrue(rec.startswith("**Review: PASS**"))
+
+    def test_no_verify_step_without_a_test_lane_is_refused(self):
+        self._write_no_verify_step(None)
+        self.assertEqual(self._main(), 2)
+
+    def test_no_verify_step_lane_without_evidence_is_refused(self):
+        self._write_no_verify_step({"status": "ran", "verdict": "PASS", "evidence": ""})
+        self.assertEqual(self._main(), 2)
+
+    def test_no_verify_step_failing_tests_is_issues(self):
+        self._write_no_verify_step({"status": "ran", "verdict": "FAIL", "evidence": "1 failed"})
+        self.assertEqual(self._main(), 0)
+        rec = (self.gate / f"{self.sha}.review.md").read_text(encoding="utf-8")
+        self.assertTrue(rec.startswith("**Review: ISSUES**"))
 
 
 if __name__ == "__main__":

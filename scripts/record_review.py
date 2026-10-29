@@ -68,6 +68,24 @@ def verify_verdict(gdir: pathlib.Path, sha: str) -> str:
     return str(data.get("verdict", "")).upper()
 
 
+def verify_from_lane(result: dict, sha: str) -> str:
+    """For a repo with no verify step (no scripts/verify.py): the verifier ran the repo's tests itself and
+    reports them as a `verify` lane with evidence. Still the verifier's word, never the author's."""
+    ln = next((x for x in result.get("lanes", []) if x.get("lane") == "verify"), None)
+    if ln is None:
+        raise Refused("no scripts/verify.py here, so a `verify` lane with the test command and output is required")
+    if ln.get("status") == "blocked":
+        return "BLOCKED"
+    if ln.get("sha") != sha:
+        raise Refused(f"verify lane ran on {ln.get('sha')!r}, not on {sha}")
+    if not (ln.get("evidence") or "").strip():
+        raise Refused("verify lane without evidence — paste the test command and its output")
+    verdict = str(ln.get("verdict", "")).upper()
+    if verdict not in ("PASS", "FAIL"):
+        raise Refused(f"verify lane verdict must be PASS or FAIL, got {ln.get('verdict')!r}")
+    return verdict
+
+
 def check(result: dict, sha: str, verify: str) -> str:
     """Return the verdict, or raise Refused. Pure: no files, no git."""
     if result.get("sha") != sha:
@@ -148,7 +166,9 @@ def main(argv: list[str] | None = None) -> int:
     result = json.loads(a.result.read_text(encoding="utf-8"))
     gdir = gate_dir(repo)
     try:
-        verdict = check(result, sha, verify_verdict(gdir, sha))
+        has_verify_step = (repo / "scripts" / "verify.py").exists()
+        verify = verify_verdict(gdir, sha) if has_verify_step else verify_from_lane(result, sha)
+        verdict = check(result, sha, verify)
     except Refused as e:
         print(f"REFUSED: {e}", file=sys.stderr)
         return 2

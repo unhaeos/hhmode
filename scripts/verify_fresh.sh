@@ -48,7 +48,7 @@ tools=(
   # "Write(path) ... rules never match"). Found when the first verifier run was BLOCKED unable to write.
   "Agent" "Read" "Grep" "Glob" "Edit(./.verify/**)"
   "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" "Bash(git status:*)" "Bash(git rev-parse:*)"
-  "Bash(python3 scripts/verify.py:*)"
+  "Bash(python3 scripts/verify.py:*)" "Bash(python3 -m unittest:*)"
   "Bash(python3 $here/scripts/record_review.py:*)"
   "Bash(bash scripts/agents/wt_env.sh:*)" "Bash(bash scripts/agents/serve.sh:*)"
   "Bash(curl:*)" "Bash(ss -ltnp:*)" "Bash(kill:*)"
