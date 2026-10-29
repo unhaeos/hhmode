@@ -20,18 +20,32 @@ Compute today via `date +%Y-%m-%d` and start via `date -d '<period>' +%Y-%m-%d`.
 ```bash
 SINCE="${ARGUMENTS:-7 days ago}"
 AUTHOR=$(sed -n 's/^- git_author: //p' ~/projects/hhmode/local/identity.md)
+START=$(date -d "$SINCE" +%Y-%m-%d)
 echo "=== TODAY ==="; date +%Y-%m-%d
-echo "=== SINCE ==="; date -d "$SINCE" +%Y-%m-%d
+echo "=== SINCE ==="; echo "$START"
+# untracked or modified files under a checkout whose mtime is inside the period
+changed() {
+  { git -C "$1" -c core.quotePath=false ls-files --others --exclude-standard; git -C "$1" -c core.quotePath=false diff --name-only HEAD; } 2>/dev/null |
+    sort -u | while read -r f; do [[ -f "$1/$f" ]] && ! [[ $(date -r "$1/$f" +%Y-%m-%d) < "$START" ]] && echo "$f"; done | head -40
+}
 for d in ~/projects/*/; do
   name=$(basename "$d")
   [[ "$name" == _archive ]] && continue
   [[ -d "$d/.git" ]] || continue
+  base=$(git -C "$d" rev-parse --verify -q main >/dev/null && echo main || echo master)
   echo "=== PROJECT: $name ==="
-  echo "-- log --"
-  git -C "$d" log --author="$AUTHOR" --since="$SINCE" --pretty=format:'%h %ad %s' --date=short
+  echo "-- log ($base) --"
+  git -C "$d" log "$base" --author="$AUTHOR" --since="$SINCE" --pretty=format:'%h %ad %s' --date=short 2>/dev/null
   echo
-  echo "-- status --"
-  git -C "$d" status --short
+  echo "-- unmerged branch commits --"
+  git -C "$d" log --branches --not "$base" --author="$AUTHOR" --since="$SINCE" --pretty=format:'%h %ad %D | %s' --date=short 2>/dev/null | head -40
+  echo
+  echo "-- changed in period, not committed --"
+  changed "$d"
+  echo "-- worktrees with uncommitted changes in period --"
+  git -C "$d" worktree list --porcelain | sed -n 's/^worktree //p' | tail -n +2 | while read -r wt; do
+    c=$(changed "$wt"); [[ -n "$c" ]] && { echo "[$wt] ($(git -C "$wt" branch --show-current))"; echo "$c"; }
+  done
   echo "-- branches (non-main, with track) --"
   git -C "$d" for-each-ref --format='%(refname:short) %(upstream:track)' refs/heads/ | grep -v '^main\b\|^master\b'
   echo
@@ -42,7 +56,9 @@ Then `Read` `~/.claude/memo.md`.
 
 ## 3. Analysis
 
-**This-week work** — from git log:
+**This-week work** — from git log, unmerged branch commits, and uncommitted files:
+- Unmerged branch commits whose subject already appears on main (a squash merge adds ` (#N)`) are the same work — count it once. Work that exists only on an unmerged branch is still this week's work; say it is not merged yet.
+- A changed-in-period file that holds a measurement or evaluation result (run output, log, generated report) is an outcome: read it for the headline numbers. If the project's README or docs name a script that aggregates such results, run that script instead of computing your own. Before reporting a metric as missing, check the listed worktrees and unmerged branches for it. State the measurement date and the code it ran on (from the file's own metadata) — numbers only from what you read or ran.
 - Group by project. If 5+ commits, cluster by prefix (`feat/`/`fix/`/`refactor/`/`docs/`/`chore/`) or topic, with `(N commits)` shown once on the first bullet.
 - If <5, paraphrase naturally in Korean.
 - Skip projects with no activity.
@@ -55,11 +71,22 @@ Then `Read` `~/.claude/memo.md`.
 **Next-week plan**:
 - Uncommitted changes, branches ahead of origin.
 - memo priority order: `blocker` > `bug` > `todo` > `refactor`.
-- 3–6 bullets, naturally written.
+- 3–6 bullets, naturally written, grouped under `[프로젝트명]` headers like the work section.
 
 ## 4. Output format (form-ready)
 
 **Critical**: each of the three wrapped in a fenced code block (```). Inside the block: only flat `- ` bullets — no nested indentation, no sub-bullets. (CLI markdown renderer indents nested lists, which leaks leading whitespace when copied.)
+
+**Project grouping** (work and next-week sections): write the project name once, alone on its own line as `[프로젝트명]`, then that project's `- ` bullets directly below it, then a blank line before the next project. Never repeat `[프로젝트명]` at the start of each bullet. Header and bullets both start at column 0.
+
+```
+[국방 사이버 지식그래프]
+- 첫 번째 성과 (N commits)
+- 두 번째 성과
+
+[보안 시뮬레이션 챗봇]
+- 성과
+```
 
 ```
 # 주간보고 — <today> (금주: <start> ~ <today>)
@@ -70,7 +97,7 @@ Then `Read` `~/.claude/memo.md`.
 
 ## 금주 주요 업무 내용 및 진행 현황
 
-[fenced code block with flat bullets]
+[fenced code block: `[프로젝트명]` header lines, each followed by flat bullets]
 
 ---
 
