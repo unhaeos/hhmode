@@ -34,7 +34,10 @@ fi
 if [ -e "$vdir" ]; then git -C "$main_repo" worktree remove --force "$vdir" 2>/dev/null || rm -rf "$vdir"; fi
 git -C "$main_repo" worktree add -q --detach "$vdir" "$sha"
 cleanup() {
-  if [ "${KEEP:-0}" != "1" ]; then git -C "$main_repo" worktree remove --force "$vdir" 2>/dev/null || true; fi
+  if [ "${KEEP:-0}" != "1" ]; then
+    git -C "$main_repo" worktree remove --force "$vdir" 2>/dev/null || true
+    rm -rf "$vdir.live"
+  fi
 }
 trap cleanup EXIT
 
@@ -45,8 +48,17 @@ session="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 work="$vdir/.verify"
 mkdir -p "$work"
 record="python3 $here/scripts/record_review.py --repo $vdir --result $work/result.json --report $work/report.md --session $session --mode $mode"
+py=python3; [ -x "$main_repo/.venv/bin/python" ] && py="$main_repo/.venv/bin/python"
+# Commands, skills and agents this commit changes, staged as <name>-new outside the worktree for the live lane.
+staged=$(bash "$here/scripts/stage_live_claude.sh" "$vdir" "$vdir.live" "$work/ask.sh" 2>"$work/stage.err") || staged=""
 prompt="Verify commit $sha. Your working directory $vdir is a fresh worktree at that commit; base is origin/main. \
-Mode: $mode. Your session id: $session. Write result.json and report.md in $work, then run exactly: $record"
+Mode: $mode. Your session id: $session. Python for .verify/ scripts and tests: $py. \
+Write result.json and report.md in $work, then run exactly: $record"
+if [ -n "$staged" ]; then
+  prompt="$prompt
+This commit changes Claude Code files, staged for the live lane as: $(printf '%s' "$staged" | paste -sd ',' -). \
+Try them with bash .verify/ask.sh (verifier.md step 4)."
+fi
 
 # Least privilege: the verifier reads, runs the repo's own checks, starts this worktree's servers, and writes its two
 # output files plus the record (through record_review.py). It gets no general shell and no Edit.
@@ -54,16 +66,24 @@ tools=(
   # Edit(path) covers the Write tool too; a Write(path) rule is accepted but never matches (Claude Code docs,
   # "Write(path) ... rules never match"). Found when the first verifier run was BLOCKED unable to write.
   "Agent" "Read" "Grep" "Glob" "Edit(./.verify/**)"
+  # git ls-tree: the rules lane lists rule files on origin/main; denied in 4 of 12 verifier sessions (2026-10-29).
   "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" "Bash(git status:*)" "Bash(git rev-parse:*)"
+  "Bash(git ls-tree:*)"
   "Bash(python3 scripts/verify.py:*)" "Bash(python3 -m unittest:*)"
+  "Bash($main_repo/.venv/bin/python -m unittest:*)"
   "Bash(python3 $here/scripts/record_review.py:*)"
   "Bash(bash scripts/agents/wt_env.sh:*)" "Bash(bash scripts/agents/serve.sh:*)"
   "Bash(curl:*)" "Bash(ss -ltnp:*)" "Bash(kill:*)"
-  "Bash($main_repo/.venv/bin/python .verify/:*)"
+  # Live-lane scripts the verifier writes under .verify/. Glob form: a `.verify/:*` prefix rule only matches when a
+  # space follows the prefix, so `python .verify/live.py` was refused every time (probed with claude -p
+  # 2.1.312, 2026-10-29; k-defense-kg verify-3c24b2f was refused .venv/bin/python .verify/live_hwpx.py).
+  "Bash($main_repo/.venv/bin/python .verify/*)" "Bash(python3 .verify/*)"
   # Read-only pip, for a dependency change's live lane: neither command installs anything.
   "Bash($main_repo/.venv/bin/python -m pip show:*)"
   "Bash($main_repo/.venv/bin/python -m pip install --dry-run:*)"
 )
+# The helper that runs a fresh `claude -p` in the staged folder, only when something was staged.
+[ -n "$staged" ] && tools+=("Bash(bash .verify/ask.sh:*)")
 
 # VERIFIER_READ_DIRS: extra directories the verifier may read (space-separated), for a change whose live lane
 # must read real inputs outside the worktree — e.g. a skill that reads ~/.claude/review-log. Read access only:

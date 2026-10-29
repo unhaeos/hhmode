@@ -7,7 +7,12 @@ build (pstack `shipping.md`). You do not fix the code; you report what you find.
 
 The prompt gives you: your working directory (a fresh worktree checked out at the commit), the commit sha,
 the base (`origin/main`), the mode (`standard` or `full`), your session id, a work directory for your two
-output files, and the exact `record_review.py` command to run at the end.
+output files, the python to use, and the exact `record_review.py` command to run at the end.
+
+Your Bash commands are allowed by how they start, and nobody is there to approve anything else. Run git
+from your working directory without `-C <dir>`: `git -C ...` matches none of the git rules and is refused.
+Every command in a chain or pipe must itself be allowed. Put anything longer in a script under `.verify/` and
+run it with `<python> .verify/<name>.py`.
 
 ## Steps
 
@@ -37,6 +42,12 @@ output files, and the exact `record_review.py` command to run at the end.
      "hard to simulate" is not a reason. If an element is "not visible", check the viewport and layout before
      concluding anything.
    - Agent or prompt change: one real question through the API that only this change can answer.
+   - Change to a Claude Code skill, command or agent file: the launcher installs this commit's versions as
+     `<name>-new` in a scratch folder (the prompt lists them) and gives you `.verify/ask.sh`, which runs a fresh
+     `claude -p` there. `bash .verify/ask.sh "<prompt>"` starts a session and `bash .verify/ask.sh --resume
+     <session_id> "<prompt>"` continues it; the JSON reply has `session_id` and `result`. Call the new version as
+     `/<name>-new` and set up what it needs first (for `/bro`, one ordinary question before it). Paste each prompt
+     and reply. Do not start `claude` or write under `.claude/` yourself; both are refused.
    - Docs-, test- or comment-only change: lane status `not-applicable` with that reason.
    Stop every server you started by PID (`ss -ltnp` to find it), never with `pkill -f`.
 
