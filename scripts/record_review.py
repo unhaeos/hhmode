@@ -34,6 +34,7 @@ REQUIRED = {
 }
 VALIDATED = {"CONFIRMED", "PLAUSIBLE", "REJECTED"}
 SERIOUS = {"P0", "P1"}
+SEVERITIES = {"P0", "P1", "P2", "P3", "rule"}
 
 
 class Refused(Exception):
@@ -123,6 +124,9 @@ def check(result: dict, sha: str, verify: str) -> str:
         blocked.append("verify: BLOCKED in the verify record")
     findings = result.get("findings", [])
     for f in findings:
+        # Exact values only: "p1" or "high" would otherwise slip past the validator check below.
+        if f.get("severity") not in SEVERITIES:
+            raise Refused(f"{f.get('id')} has severity {f.get('severity')!r}; use one of {sorted(SEVERITIES)}")
         if f.get("severity") in SERIOUS and f.get("validation") not in VALIDATED:
             raise Refused(f"{f.get('id')} is {f.get('severity')} without a validator verdict "
                           f"(got {f.get('validation')!r}) — spawn finding-validator for it")

@@ -87,6 +87,12 @@ PY
   KEEP=1; echo "kept $vdir for inspection" >&2
   exit 1
 fi
+# The verifier builds the record command itself, so check the mode it recorded is the one asked for.
+if ! head -n 1 "$rec" | grep -qF "· $mode ·"; then
+  echo "MODE MISMATCH: asked for $mode, record says: $(head -n 1 "$rec")" >&2
+  KEEP=1; echo "kept $vdir for inspection" >&2
+  exit 1
+fi
 echo "record: $rec"
 # The PR body's Review/Verify lines, taken from the records the verifier produced — the author pastes these
 # instead of typing a verdict.

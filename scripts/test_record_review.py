@@ -65,6 +65,12 @@ class Check(unittest.TestCase):
         f = {"id": "F1", "severity": "P1", "validation": "REJECTED"}
         self.assertEqual(rr.check(result(findings=[f]), SHA, "PASS"), "PASS")
 
+    def test_unknown_severity_is_refused(self):
+        # verifier note on hhmode #3: "p1" / "high" would skip the validator check
+        for sev in ("p1", "P1 ", "high", None):
+            with self.assertRaises(rr.Refused):
+                rr.check(result(findings=[{"id": "F1", "severity": sev}]), SHA, "PASS")
+
     def test_p3_needs_no_validator(self):
         f = {"id": "F1", "severity": "P3"}
         self.assertEqual(rr.check(result(findings=[f]), SHA, "PASS"), "PASS")
