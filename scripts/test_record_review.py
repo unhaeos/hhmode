@@ -21,6 +21,7 @@ def result(**over):
         "sha": SHA, "mode": "standard",
         "lanes": [
             {"lane": "bug", "sha": SHA, "status": "ran"},
+            {"lane": "bug-gpt", "sha": SHA, "status": "ran"},
             {"lane": "rules", "sha": SHA, "status": "ran"},
             {"lane": "live", "sha": SHA, "status": "ran", "evidence": "curl /x -> 200"},
         ],
@@ -106,6 +107,14 @@ class Check(unittest.TestCase):
         # 2026-10-29: the diff-only lane raised no P0/P1 in 88 k-defense-kg review-log rows
         lanes = result()["lanes"] + [{"lane": "bug-fable", "sha": SHA, "status": "ran"}]
         self.assertEqual(rr.check(result(mode="full", lanes=lanes), SHA, "PASS"), "PASS")
+
+    def test_both_modes_need_the_gpt_lane(self):
+        # the only reviewer from another company; without it every lane is an Anthropic model
+        lanes = [ln for ln in result()["lanes"] if ln["lane"] != "bug-gpt"]
+        with self.assertRaises(rr.Refused):
+            rr.check(result(lanes=lanes), SHA, "PASS")
+        blocked = lanes_with("bug-gpt", status="blocked", reason="codex exec failed")
+        self.assertEqual(rr.check(result(lanes=blocked), SHA, "PASS"), "BLOCKED")
 
     def test_raised_by_must_be_lane_names(self):
         # the log had 25 spellings of four reviewers ("opus", "Opusfull", "Fable)"), so no fix rate per reviewer

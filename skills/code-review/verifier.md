@@ -36,15 +36,23 @@ run it with `<python> .verify/<name>.py`.
    - When the prompt gives a scope (`since <sha>`), the diff you give the reviewers is `git diff <sha>..HEAD`.
      Read the earlier record yourself: for each of its P0/P1 findings and rule violations, check in the new
      diff whether it was addressed, and list any that was not as a finding again.
-   - `raised_by` is the lane name (`bug`, `rules`, `bug-fable`, `live`, `verify`), joined with `+` when
-     several lanes raised the same finding. `record_review.py` refuses anything else.
+   - **GPT lane (`bug-gpt`), both modes.** The launcher already ran a GPT reviewer (Codex) on the same scope
+     and the prompt gives its status and output file. You do not run it. If the status is `ran`, record the
+     lane as `ran` and treat its findings like any reviewer's: merge duplicates, send each P0/P1 to
+     `finding-validator`. Codex could not run commands or read the repo, so its findings come from the diff and
+     the changed files only. Validate them against the code before you believe them. If the status is
+     `blocked`, record the lane `blocked` with that reason.
+   - `raised_by` is the lane name (`bug`, `rules`, `bug-fable`, `bug-gpt`, `live`, `verify`), joined with `+`
+     when several lanes raised the same finding. `record_review.py` refuses anything else.
 
 4. **Live lane.** Run the change the way a user would, on the real surface, on this commit. A verdict is not
    clean without it (pstack `autopilot-full.md`).
    - API change: `scripts/agents/wt_env.sh` once, `scripts/agents/serve.sh api` in the background, then call
      the changed endpoints with `curl`. Paste request and response.
    - UI change: drive the changed screen with playwright and local chromium (pattern: `web/tests/_env.py`,
-     any `web/tests/v_*.py`). For failure states inject the failure with `page.route(...)` returning an error;
+     any `web/tests/v_*.py`). Run a test through a wrapper, `.verify/ui.py`, that sets `KDKG_WEB_URL` and
+     `KDKG_API_URL` to this worktree's ports and then runs the test file with `runpy.run_path`. Unset, the tests
+     point at the shared server, which is not this commit. `env X=... <cmd>` prefixes are refused. For failure states inject the failure with `page.route(...)` returning an error;
      "hard to simulate" is not a reason. If an element is "not visible", check the viewport and layout before
      concluding anything.
    - Agent or prompt change: one real question through the API that only this change can answer.

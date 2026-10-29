@@ -95,7 +95,7 @@ Where the model reads them: rules 2 and 3 live in `~/.claude/CLAUDE.md` (loaded 
 |---|---|
 | `hillclimb` | Iterative improvement of one metric: fixed stop predicate, frozen measurement harness, one hypothesis per iteration, keep or revert, `decision.tsv`. |
 | `investigate` | Read-only investigation ending in a cited explanation or recommendation. |
-| `code-review` | Opus bug reviewer (repo access, may run tests) + Sonnet rules reviewer; every P0/P1 re-checked by an Opus validator that tries to reproduce it; runs on every PR via `/pr`; full mode adds a Fable reviewer; a re-review reads only the diff since the last reviewed commit. |
+| `code-review` | Opus bug reviewer (repo access, may run tests) + Sonnet rules reviewer; every P0/P1 re-checked by an Opus validator that tries to reproduce it; runs on every PR via `/pr`; a GPT reviewer (Codex) in both modes; full mode adds a Fable reviewer; a re-review reads only the diff since the last reviewed commit. |
 | `plan-review` | One repo-reading reviewer checks the plan's assumptions, order, verification and irreversible steps against the code; open questions come back as experiments. No design debate (pstack: review the diff, not the plan). |
 | `report` | House style for written reports as HTML artifacts. |
 | `correct` | Find mistakes agents keep repeating (review-log, log.md, git history, rule files, optionally transcripts); a class counts at two occurrences; fix at the highest level that works and prove the check fails on a real past mistake; propose, then apply after approval. |

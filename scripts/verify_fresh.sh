@@ -86,13 +86,34 @@ if str(v.get("sha", "")) == sys.argv[2] and str(v.get("verdict", "")).upper() in
 PY
 )
 
+# GPT lane: a reviewer from another company, since a same-family reviewer shares the author's blind spots (pstack
+# pairs Opus with Grok in its reviewer panels). It runs here, before the verifier starts, so the verifier needs no
+# permission to start another CLI; the verifier validates its P0/P1 like any other lane's. It reads the same scope
+# as the other review lanes. Skipped on a dry run, which must not call out.
+gpt="$work/gpt-review.md"
+gpt_status="not run (dry run)"
+if [ "${PRINT_PROMPT:-0}" != "1" ]; then
+  gbase="${since:-$(git -C "$vdir" merge-base origin/main HEAD)}"
+  python3 "$here/scripts/gpt_review_input.py" "$vdir" "$gbase" > "$work/gpt-input.md"
+  if ! command -v codex >/dev/null; then
+    gpt_status="blocked: codex CLI not installed"
+  elif timeout 1500 codex exec -s read-only --ephemeral -C "$vdir" -c 'model_reasoning_effort="high"' \
+         -o "$gpt" "$(cat "$here/skills/code-review/gpt-reviewer.md")" < "$work/gpt-input.md" \
+         > "$work/gpt-review.log" 2>&1 && [ -s "$gpt" ]; then
+    gpt_status="ran"
+  else
+    gpt_status="blocked: codex exec failed, see $work/gpt-review.log"
+  fi
+fi
+
 record="python3 $here/scripts/record_review.py --repo $vdir --result $work/result.json --report $work/report.md --session $session --mode $mode${since:+ --since $since}"
 py=python3; [ -x "$main_repo/.venv/bin/python" ] && py="$main_repo/.venv/bin/python"
 # Commands, skills and agents this commit changes, staged as <name>-new outside the worktree for the live lane.
 staged=$(bash "$here/scripts/stage_live_claude.sh" "$vdir" "$vdir.live" "$work/ask.sh" 2>"$work/stage.err") || staged=""
 prompt="Verify commit $sha. Your working directory $vdir is a fresh worktree at that commit; base is origin/main. \
 Mode: $mode. Your session id: $session. Python for .verify/ scripts and tests: $py. \
-Write result.json and report.md in $work, then run exactly: $record"
+Write result.json and report.md in $work, then run exactly: $record
+GPT lane (bug-gpt): $gpt_status. Its review of the same scope is $gpt (verifier.md step 3)."
 if [ -n "$since" ]; then
   prompt="$prompt
 Scope: ${since:0:7} was already reviewed (record $common/gate/$since.review.md). Review lanes read only \
