@@ -65,6 +65,12 @@ class Check(unittest.TestCase):
         f = {"id": "F1", "severity": "P1", "validation": "REJECTED"}
         self.assertEqual(rr.check(result(findings=[f]), SHA, "PASS"), "PASS")
 
+    def test_unknown_severity_is_refused(self):
+        # verifier note on hhmode #3: "p1" / "high" would skip the validator check
+        for sev in ("p1", "P1 ", "high", None):
+            with self.assertRaises(rr.Refused):
+                rr.check(result(findings=[{"id": "F1", "severity": sev}]), SHA, "PASS")
+
     def test_p3_needs_no_validator(self):
         f = {"id": "F1", "severity": "P3"}
         self.assertEqual(rr.check(result(findings=[f]), SHA, "PASS"), "PASS")
@@ -130,9 +136,26 @@ class EndToEnd(unittest.TestCase):
         r = result(sha=self.sha, lanes=[{**ln, "sha": self.sha} for ln in result()["lanes"]], **over)
         self.res.write_text(json.dumps(r), encoding="utf-8")
 
-    def _main(self):
+    def _main(self, mode="standard"):
         return rr.main(["--repo", str(self.repo), "--result", str(self.res), "--report", str(self.rep),
-                        "--session", "11111111-2222-3333-4444-555555555555", "--log-dir", str(self.logs)])
+                        "--session", "11111111-2222-3333-4444-555555555555", "--mode", mode,
+                        "--log-dir", str(self.logs)])
+
+    # Found by the verifier on hhmode #3 (F2, F3, F1).
+    def test_full_request_reported_as_standard_is_refused(self):
+        self._write()
+        self.assertEqual(self._main(mode="full"), 2)
+
+    def test_verify_record_with_an_unknown_verdict_is_refused(self):
+        self._write(verify="")
+        self.assertEqual(self._main(), 2)
+        self.assertFalse((self.gate / f"{self.sha}.review.md").exists())
+
+    def test_record_carries_the_verify_verdict(self):
+        self._write()
+        self.assertEqual(self._main(), 0)
+        rec = (self.gate / f"{self.sha}.review.md").read_text(encoding="utf-8")
+        self.assertIn("verify: PASS;", rec)
 
     def test_writes_record_and_log(self):
         self._write()
