@@ -65,8 +65,15 @@ tools=(
   "Bash($main_repo/.venv/bin/python -m pip install --dry-run:*)"
 )
 
+# VERIFIER_READ_DIRS: extra directories the verifier may read (space-separated), for a change whose live lane
+# must read real inputs outside the worktree — e.g. a skill that reads ~/.claude/review-log. Read access only:
+# the Edit rule above still limits writes to ./.verify.
+add_dirs=()
+for d in ${VERIFIER_READ_DIRS:-}; do add_dirs+=(--add-dir "$d"); done
+
 echo "verifier session $session on ${sha:0:7} ($mode) in $vdir"
 (cd "$vdir" && claude -p "$prompt" \
+    ${add_dirs[@]+"${add_dirs[@]}"} \
     --session-id "$session" \
     --append-system-prompt-file "$here/skills/code-review/verifier.md" \
     --model "${VERIFIER_MODEL:-claude-opus-5-5}" \
