@@ -20,7 +20,9 @@ run it with `<python> .verify/<name>.py`.
    files from the base branch (`git show origin/main:CLAUDE.md`, plus any CLAUDE.md / REVIEW.md in folders
    the diff touches). Write the intent paragraph yourself from the diff; do not copy the commit message.
 
-2. **Verify lane.** Run the repo's verify step on this commit. In k-defense-kg that is
+2. **Verify lane.** If the prompt says this commit's verify record already holds a verdict, read that file and
+   do not run verify.py again: the script wrote it for this exact sha, and running it twice costs about ten
+   minutes for the same answer. Otherwise run the repo's verify step on this commit. In k-defense-kg that is
    `python3 scripts/verify.py` (it writes `<gate>/<sha>.verify.json` itself and may take long: run it in the
    background and wait). Never write a verify record by hand. If the repo has no `scripts/verify.py`, run its
    tests yourself (what its CLAUDE.md or README lists; otherwise `python3 -m unittest discover -s scripts -p
@@ -28,10 +30,14 @@ run it with `<python> .verify/<name>.py`.
    and its summary line. If no test can be run, `status: blocked` with the reason.
 
 3. **Review lanes.** Follow the `code-review` skill, Steps 2–4, yourself: spawn `bug-reviewer` (lane `bug`)
-   and `rules-reviewer` (lane `rules`); in `full` mode also a `bug-reviewer` given only the diff (lane
-   `bug-diff-only`) and a `bug-reviewer` with `model: fable` (lane `bug-fable`). Give them the intent, the
-   diff and the repo path, nothing else: no focus lists, no claims about the code (Step 2). Spawn
-   `finding-validator` for every P0/P1 and record its verdict on the finding.
+   and `rules-reviewer` (lane `rules`); in `full` mode also a `bug-reviewer` with `model: fable` (lane
+   `bug-fable`). Give them the intent, the diff and the repo path, nothing else: no focus lists, no claims
+   about the code (Step 2). Spawn `finding-validator` for every P0/P1 and record its verdict on the finding.
+   - When the prompt gives a scope (`since <sha>`), the diff you give the reviewers is `git diff <sha>..HEAD`.
+     Read the earlier record yourself: for each of its P0/P1 findings and rule violations, check in the new
+     diff whether it was addressed, and list any that was not as a finding again.
+   - `raised_by` is the lane name (`bug`, `rules`, `bug-fable`, `live`, `verify`), joined with `+` when
+     several lanes raised the same finding. `record_review.py` refuses anything else.
 
 4. **Live lane.** Run the change the way a user would, on the real surface, on this commit. A verdict is not
    clean without it (pstack `autopilot-full.md`).

@@ -7,7 +7,14 @@
 # verdict. pstack: "Only a verdict from an agent that did not write the code counts."
 #
 # Usage: verify_fresh.sh <task worktree> [standard|full]
-# Env:   KEEP=1 keeps the verifier worktree; VERIFIER_MODEL overrides the model.
+# Env:   KEEP=1 keeps the verifier worktree; VERIFIER_MODEL overrides the model; WHOLE=1 reviews the whole branch
+#        diff even when an earlier commit on it was already reviewed; PRINT_PROMPT=1 prints the verifier's prompt
+#        and exits without starting it.
+#
+# Proportional (pstack autopilot-full): when an earlier commit on this branch has a PASS or ISSUES verifier record
+# in at least this mode, the review lanes read only the diff after it (`--since`). When this commit already has a verify record that ran (PASS or
+# FAIL), the verifier reads it instead of running verify.py again — about ten minutes in k-defense-kg, where the
+# verifier re-ran the author's verify on the same sha (verify-d89c2a1, 2026-10-29). A BLOCKED record runs again.
 set -euo pipefail
 
 src="${1:?usage: verify_fresh.sh <task worktree> [standard|full]}"
@@ -47,13 +54,55 @@ if [ -f "$vdir/scripts/agents/wt_env.sh" ]; then (cd "$vdir" && bash scripts/age
 session="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 work="$vdir/.verify"
 mkdir -p "$work"
-record="python3 $here/scripts/record_review.py --repo $vdir --result $work/result.json --report $work/report.md --session $session --mode $mode"
+
+# The newest earlier commit on this branch that a verifier reviewed with every lane run (PASS or ISSUES) in at
+# least this mode — the same test record_review.py --since applies.
+since=""
+if [ "${WHOLE:-0}" != "1" ]; then
+  since=$(python3 - "$here/scripts" "$common/gate" "$mode" "$sha" $(git -C "$src" rev-list origin/main..HEAD 2>/dev/null) <<'PY'
+import pathlib, sys
+sys.path.insert(0, sys.argv[1])
+import record_review as rr
+gate, mode, head = pathlib.Path(sys.argv[2]), sys.argv[3], sys.argv[4]
+for c in sys.argv[5:]:
+    p = gate / f"{c}.review.md"
+    got = rr.reviewed_as(p.read_text(encoding="utf-8")) if c != head and p.exists() else None
+    if got and rr.STRENGTH[got] >= rr.STRENGTH[mode]:
+        print(c)
+        break
+PY
+)
+fi
+# This commit's verify record, if verify.py already ran to a verdict (not BLOCKED).
+vrec="$common/gate/$sha.verify.json"
+vdone=$(python3 - "$vrec" "$sha" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    v = json.load(open(sys.argv[1], encoding="utf-8"))
+except OSError:
+    sys.exit(0)
+if str(v.get("sha", "")) == sys.argv[2] and str(v.get("verdict", "")).upper() in ("PASS", "FAIL"):
+    print(str(v["verdict"]).upper())
+PY
+)
+
+record="python3 $here/scripts/record_review.py --repo $vdir --result $work/result.json --report $work/report.md --session $session --mode $mode${since:+ --since $since}"
 py=python3; [ -x "$main_repo/.venv/bin/python" ] && py="$main_repo/.venv/bin/python"
 # Commands, skills and agents this commit changes, staged as <name>-new outside the worktree for the live lane.
 staged=$(bash "$here/scripts/stage_live_claude.sh" "$vdir" "$vdir.live" "$work/ask.sh" 2>"$work/stage.err") || staged=""
 prompt="Verify commit $sha. Your working directory $vdir is a fresh worktree at that commit; base is origin/main. \
 Mode: $mode. Your session id: $session. Python for .verify/ scripts and tests: $py. \
 Write result.json and report.md in $work, then run exactly: $record"
+if [ -n "$since" ]; then
+  prompt="$prompt
+Scope: ${since:0:7} was already reviewed (record $common/gate/$since.review.md). Review lanes read only \
+git diff $since..HEAD, plus that record to check its findings were addressed (verifier.md step 3)."
+fi
+if [ -n "$vdone" ]; then
+  prompt="$prompt
+Verify: $vrec already holds verdict $vdone for this commit, written by scripts/verify.py. Read it; do not run \
+verify.py again (verifier.md step 2)."
+fi
 if [ -n "$staged" ]; then
   prompt="$prompt
 This commit changes Claude Code files, staged for the live lane as: $(printf '%s' "$staged" | paste -sd ',' -). \
@@ -91,7 +140,8 @@ tools=(
 add_dirs=()
 for d in ${VERIFIER_READ_DIRS:-}; do add_dirs+=(--add-dir "$d"); done
 
-echo "verifier session $session on ${sha:0:7} ($mode) in $vdir"
+echo "verifier session $session on ${sha:0:7} ($mode${since:+, since ${since:0:7}}${vdone:+, verify record reused}) in $vdir"
+if [ "${PRINT_PROMPT:-0}" = "1" ]; then printf '%s\n' "$prompt"; exit 0; fi     # dry run: what the verifier would get
 (cd "$vdir" && claude -p "$prompt" \
     ${add_dirs[@]+"${add_dirs[@]}"} \
     --session-id "$session" \

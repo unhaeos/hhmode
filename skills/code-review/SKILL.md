@@ -36,10 +36,18 @@ An author running this skill on its own change gets advice, not a gate record (p
 | Mode | When | Reviewers |
 |---|---|---|
 | **standard** | default; `/pr` runs it on every PR | bug-reviewer (Opus, full context) + rules-reviewer (Sonnet) |
-| **full** | risk tier high, or `--full` | standard + bug-reviewer given **only the diff** (Anthropic plugin) + bug-reviewer on **Fable** (`model: fable`) |
+| **full** | risk tier high, or `--full` | standard + bug-reviewer on **Fable** (`model: fable`) |
 
 Risk tier comes from the repo's CLAUDE.md when it defines one (e.g. k-defense-kg: DB schema, KG
 loads, API contracts, prompt ground truth = high).
+
+Full mode used to add a bug-reviewer given only the diff (Anthropic plugin). It was dropped on
+2026-10-29: in k-defense-kg's review log (88 rows) it raised 5 findings and no P0/P1. Opus with full
+context raised about 10 P0/P1, and Fable 2–3 that Opus missed.
+
+A re-review reads only the diff since the last reviewed commit (pstack `autopilot-full`:
+re-verify in proportion to the change), and checks that the earlier record's P0/P1 findings and
+rule violations were addressed. Verify and the live lane still run on the new commit.
 
 ## Step 1 — Detect what to review
 
@@ -77,9 +85,8 @@ the report language (the user's language).
 
 - `subagent_type: bug-reviewer` — intent, diff, repo path, rubric, test commands.
 - `subagent_type: rules-reviewer` — diff and the base-branch rule files.
-- full mode only:
-  - `subagent_type: bug-reviewer` with the diff and the intent only, told to use nothing else.
-  - `subagent_type: bug-reviewer` with `model: fable` and the same material as the first one.
+- full mode only: `subagent_type: bug-reviewer` with `model: fable` and the same material as the
+  first one.
 
 ## Step 4 — Validate every P0/P1 finding
 
@@ -132,7 +139,8 @@ gets one — it does not certify a commit.
 ## Step 7 — Log for measuring the reviewer
 
 `record_review.py` appends one row per finding to `~/.claude/review-log/<repo>.tsv`:
-`date  sha  mode  id  severity  path:line  raised_by  validation  title`. For a review outside a
+`date  sha  mode  id  severity  path:line  raised_by  validation  title`. `raised_by` is a lane
+name (`bug`, `rules`, `bug-fable`, `live`, `verify`), joined with `+`. For a review outside a
 gate, append the same rows yourself. Later, a finding counts as **fixed** if its lines change
 before merge. The fix rate per reviewer/model is the number to tune against (OpenAI reports
 52.7%, Google ~40%, Meta 19.7% for their systems).
@@ -140,7 +148,9 @@ before merge. The fix rate per reviewer/model is the number to tune against (Ope
 ## Convergence
 
 One invocation is one review. On a re-review, review only the new diff and do not re-report
-findings already raised. After the third round on the same change, stop and tell the author to
+findings the new diff addressed; an earlier P0/P1 or rule violation it left as it was is listed
+again, since the new record is the one the gate reads. After the third round on the same change,
+stop and tell the author to
 reconsider the approach (the Claude Code team caps review loops at three).
 
 ## Common mistakes
