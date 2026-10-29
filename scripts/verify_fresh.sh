@@ -11,8 +11,8 @@
 #        diff even when an earlier commit on it was already reviewed; PRINT_PROMPT=1 prints the verifier's prompt
 #        and exits without starting it.
 #
-# Proportional (pstack autopilot-full): when an earlier commit on this branch has a verifier record, the review
-# lanes read only the diff after it (`--since`). When this commit already has a verify record that ran (PASS or
+# Proportional (pstack autopilot-full): when an earlier commit on this branch has a PASS or ISSUES verifier record
+# in at least this mode, the review lanes read only the diff after it (`--since`). When this commit already has a verify record that ran (PASS or
 # FAIL), the verifier reads it instead of running verify.py again — about ten minutes in k-defense-kg, where the
 # verifier re-ran the author's verify on the same sha (verify-d89c2a1, 2026-10-29). A BLOCKED record runs again.
 set -euo pipefail
@@ -55,15 +55,23 @@ session="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 work="$vdir/.verify"
 mkdir -p "$work"
 
-# The newest earlier commit on this branch that a verifier already reviewed.
+# The newest earlier commit on this branch that a verifier reviewed with every lane run (PASS or ISSUES) in at
+# least this mode — the same test record_review.py --since applies.
 since=""
 if [ "${WHOLE:-0}" != "1" ]; then
-  for c in $(git -C "$src" rev-list origin/main..HEAD 2>/dev/null); do
-    [ "$c" = "$sha" ] && continue
-    if [ -f "$common/gate/$c.review.md" ] && grep -q "verifier-session:" "$common/gate/$c.review.md"; then
-      since="$c"; break
-    fi
-  done
+  since=$(python3 - "$here/scripts" "$common/gate" "$mode" "$sha" $(git -C "$src" rev-list origin/main..HEAD 2>/dev/null) <<'PY'
+import pathlib, sys
+sys.path.insert(0, sys.argv[1])
+import record_review as rr
+gate, mode, head = pathlib.Path(sys.argv[2]), sys.argv[3], sys.argv[4]
+for c in sys.argv[5:]:
+    p = gate / f"{c}.review.md"
+    got = rr.reviewed_as(p.read_text(encoding="utf-8")) if c != head and p.exists() else None
+    if got and rr.STRENGTH[got] >= rr.STRENGTH[mode]:
+        print(c)
+        break
+PY
+)
 fi
 # This commit's verify record, if verify.py already ran to a verdict (not BLOCKED).
 vrec="$common/gate/$sha.verify.json"

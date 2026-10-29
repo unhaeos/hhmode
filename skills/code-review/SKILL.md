@@ -148,7 +148,9 @@ before merge. The fix rate per reviewer/model is the number to tune against (Ope
 ## Convergence
 
 One invocation is one review. On a re-review, review only the new diff and do not re-report
-findings already raised. After the third round on the same change, stop and tell the author to
+findings the new diff addressed; an earlier P0/P1 or rule violation it left as it was is listed
+again, since the new record is the one the gate reads. After the third round on the same change,
+stop and tell the author to
 reconsider the approach (the Claude Code team caps review loops at three).
 
 ## Common mistakes

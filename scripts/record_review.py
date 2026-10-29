@@ -20,8 +20,8 @@ Usage: record_review.py --repo <worktree> --result <result.json> --report <repor
                         --mode standard|full [--since <reviewed ancestor sha>]
 
 A re-review is proportional to what changed since the last one (pstack autopilot-full): with `--since`, the
-review lanes read only the diff after a commit that already has a verifier record on this branch. Verify and
-live still run on this commit.
+review lanes read only the diff after a commit on this branch whose verifier record is PASS or ISSUES in at least
+this mode. Verify and live still run on this commit.
 """
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ import argparse
 import datetime as dt
 import json
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -154,17 +155,34 @@ def check(result: dict, sha: str, verify: str) -> str:
     return "PASS"
 
 
-def check_since(repo: pathlib.Path, gdir: pathlib.Path, sha: str, since: str) -> str:
+STRENGTH = {"standard": 1, "full": 2}
+SINCE_RE = re.compile(r"^\*\*Review: (PASS|ISSUES)\*\* · [0-9a-f]{7,40} · (standard|full)\b")
+
+
+def reviewed_as(text: str) -> str | None:
+    """The mode a verifier record covers, or None when it does not count as a review: no verifier session, or
+    BLOCKED (a blocked lane still writes a record; independent review of hhmode e6968d0 reproduced a PASS
+    scoped to a BLOCKED commit whose bug lane never ran)."""
+    m = SINCE_RE.match(text)
+    return m.group(2) if m and "verifier-session:" in text else None
+
+
+def check_since(repo: pathlib.Path, gdir: pathlib.Path, sha: str, since: str, mode: str) -> str:
     """The full sha of `since`, or raise Refused. A review limited to the diff after `since` stands only if
-    `since` itself was reviewed by a verifier and lies on this commit's history."""
+    `since` itself was reviewed by a verifier, every lane ran, in at least this mode, and it lies on this
+    commit's history."""
     full = git(repo, "rev-parse", since)
     if full == sha:
         raise Refused("--since names the commit under review itself")
     if subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", full, sha]).returncode != 0:
         raise Refused(f"--since {full[:7]} is not an ancestor of {sha[:7]}")
     rec = gdir / f"{full}.review.md"
-    if not rec.exists() or "verifier-session:" not in rec.read_text(encoding="utf-8"):
-        raise Refused(f"--since {full[:7]} has no verifier record, so the diff before it was never reviewed")
+    got = reviewed_as(rec.read_text(encoding="utf-8")) if rec.exists() else None
+    if got is None:
+        raise Refused(f"--since {full[:7]} has no PASS or ISSUES verifier record, so the diff before it was never "
+                      "fully reviewed")
+    if STRENGTH[got] < STRENGTH[mode]:
+        raise Refused(f"--since {full[:7]} was reviewed in {got} mode; a {mode} review cannot start after it")
     return full
 
 
@@ -215,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
         has_verify_step = (repo / "scripts" / "verify.py").exists()
         verify = verify_verdict(gdir, sha) if has_verify_step else verify_from_lane(result, sha)
         verdict = check(result, sha, verify)
-        since = check_since(repo, gdir, sha, a.since) if a.since else None
+        since = check_since(repo, gdir, sha, a.since, a.mode) if a.since else None
     except Refused as e:
         print(f"REFUSED: {e}", file=sys.stderr)
         return 2

@@ -155,11 +155,12 @@ class EndToEnd(unittest.TestCase):
                         "--log-dir", str(self.logs)] + (["--since", since] if since else []))
 
     # A re-review limited to the diff after an earlier commit (pstack: re-verify in proportion).
-    def _second_commit(self, reviewed=True):
+    def _second_commit(self, reviewed=True, head="ISSUES", mode="standard"):
         first = self.sha
         if reviewed:
             (self.gate / f"{first}.review.md").write_text(
-                "**Review: ISSUES** · x\n\n<!-- verifier-session: 9; verify: PASS; lanes: -->\n", encoding="utf-8")
+                f"**Review: {head}** · {first[:7]} · {mode} · verifier 9\n\n"
+                "<!-- verifier-session: 9; verify: PASS; lanes: -->\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(self.repo), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q",
                         "--allow-empty", "-m", "fix"], check=True, capture_output=True)
         self.sha = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"],
@@ -180,6 +181,27 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(self._main(since=first), 2)
         self.assertFalse((self.gate / f"{self.sha}.review.md").exists())
 
+    def test_since_a_blocked_review_is_refused(self):
+        # independent review of e6968d0 (F1): a BLOCKED record also names its verifier session, and a PASS
+        # scoped to it left the blocked commit's diff unread by any bug reviewer
+        first = self._second_commit(head="BLOCKED")
+        self._write()
+        self.assertEqual(self._main(since=first), 2)
+        self.assertFalse((self.gate / f"{self.sha}.review.md").exists())
+
+    def test_since_a_weaker_mode_is_refused(self):
+        # F2: a full review scoped to a standard one never has Fable read the diff before it
+        first = self._second_commit(mode="standard")
+        lanes = [{**ln, "sha": None} for ln in result()["lanes"]] + [{"lane": "bug-fable", "status": "ran"}]
+        self._write(mode="full")
+        r = json.loads(self.res.read_text(encoding="utf-8"))
+        r["lanes"] = [{**ln, "sha": self.sha} for ln in lanes]
+        self.res.write_text(json.dumps(r), encoding="utf-8")
+        self.assertEqual(self._main(mode="full", since=first), 2)
+        (self.gate / f"{first}.review.md").write_text(
+            f"**Review: PASS** · {first[:7]} · full · verifier 9\n\n<!-- verifier-session: 9 -->\n", encoding="utf-8")
+        self.assertEqual(self._main(mode="full", since=first), 0)
+
     def test_since_the_commit_itself_or_a_non_ancestor_is_refused(self):
         self._second_commit()
         self._write()
@@ -187,7 +209,9 @@ class EndToEnd(unittest.TestCase):
         other = subprocess.run(["git", "-C", str(self.repo), "-c", "user.email=t@t", "-c", "user.name=t",
                                 "commit-tree", "-m", "o", "HEAD^{tree}"],
                                check=True, capture_output=True, text=True).stdout.strip()
-        (self.gate / f"{other}.review.md").write_text("<!-- verifier-session: 9 -->\n", encoding="utf-8")
+        (self.gate / f"{other}.review.md").write_text(       # a valid record: only ancestry is wrong
+            f"**Review: PASS** · {other[:7]} · standard · verifier 9\n\n<!-- verifier-session: 9 -->\n",
+            encoding="utf-8")
         self.assertEqual(self._main(since=other), 2)
 
     # Found by the verifier on hhmode #3 (F2, F3, F1).
