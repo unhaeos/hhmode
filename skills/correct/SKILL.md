@@ -71,8 +71,8 @@ pairs each rule with what enforces it:
 | <the rule> | <script / hook / lint / test, or "nothing"> | <log.md line, sha, review-log row> |
 
 When the user corrects an agent, fix the mistake and add the rule. If the rule was already in the table and its
-enforcer is "nothing", that is a repeat: fix it at the highest level in the same change. Drop a rule once its
-mistake can no longer happen.
+enforcer is "nothing", that is a repeat: take it through step 3 at the highest level (prove, propose, wait for
+approval) together with the correction, not as a later chore. Drop a rule once its mistake can no longer happen.
 
 ## Reply
 

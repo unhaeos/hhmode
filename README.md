@@ -74,7 +74,8 @@ Where the model reads them: rules 2 and 3 live in `~/.claude/CLAUDE.md` (loaded 
 | Item | Claude Code | Codex |
 |---|---|---|
 | `hillclimb`, `investigate` | yes | yes |
-| `code-review`, `plan-review`, `correct` | yes (spawns subagents via the Agent tool) | no |
+| `code-review`, `plan-review` | yes (spawns subagents via the Agent tool) | no |
+| `correct` | yes | finding only (applying a fix goes through `/pr`, a Claude Code command) |
 | `report` | yes (uses the Artifact tool) | no |
 | `commands/*` | yes | no |
 
