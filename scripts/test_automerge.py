@@ -37,18 +37,12 @@ class Decide(unittest.TestCase):
         merge, reasons, *_ = am.decide(pr(), [rec()])
         self.assertTrue(merge, reasons)
 
-    # The /pr template line is "**Risk tier: low | medium | high**"; left unfilled it must not read as low.
-    def test_template_placeholder_is_no_author_tier(self):
-        merge, reasons, *_ = am.decide(pr(body="**Risk tier: low | medium | high**"), [rec()])
-        self.assertFalse(merge)
-        self.assertTrue(any("PR 본문" in r for r in reasons))
-
-    # GPT lane on 08df90d: prose mentioning a tier must not shadow the field; two fields that disagree count as none.
-    def test_only_the_risk_tier_field_counts(self):
-        self.assertEqual(am.author_tier("Explain the low risk tier.\n**Risk tier: high** (gate)"), "high")
-        self.assertIsNone(am.author_tier("**Risk tier: low**\n...\nRisk tier: medium"))
-        self.assertIsNone(am.author_tier("We kept the risk tier low."))
-        self.assertEqual(am.author_tier("**Risk tier: low** (docs only)"), "low")
+    # Verifier on c982ba2: the author's free-text tier kept reading lower than written; it no longer decides.
+    def test_the_authors_tier_does_not_decide(self):
+        for body in ("**Risk tier: low**", "**Risk tier: medium** - **high**", "no tier field at all"):
+            merge, reasons, tiers, _ = am.decide(pr(body=body), [rec()])
+            self.assertTrue(merge, (body, reasons))
+            self.assertEqual(list(tiers), ["Claude 검증", "Codex 리뷰"])
 
     # k-defense-kg #35: the author called a dependency pin low.
     def test_highest_tier_wins_over_the_authors(self):
@@ -59,9 +53,9 @@ class Decide(unittest.TestCase):
 
     # User, 2026-10-30: up to medium merges without the user; high still goes to them.
     def test_medium_merges_high_does_not(self):
-        merge, reasons, *_ = am.decide(pr(body="**Risk tier: medium**"), [rec(tier="medium", gpt="medium")])
+        merge, reasons, *_ = am.decide(pr(), [rec(tier="medium", gpt="medium")])
         self.assertTrue(merge, reasons)
-        self.assertFalse(am.decide(pr(body="**Risk tier: high**"), [rec(tier="medium", gpt="medium")])[0])
+        self.assertFalse(am.decide(pr(), [rec(tier="medium", gpt="high")])[0])
 
     def test_missing_codex_review_goes_to_the_user(self):
         merge, reasons, *_ = am.decide(pr(), [rec(gpt=None)])
@@ -124,45 +118,18 @@ class Parse(unittest.TestCase):
         self.assertIsNone(am.gpt_tier("## Tier\nlow | medium | high — <path: reason>\n"))
         self.assertIsNone(am.gpt_tier("## Tier\nlow-to-medium — x\n"))
 
-    # PR #13: Codex's reason named other tiers ("from low to low or medium"), and the whole line was counted.
-    def test_the_tier_is_the_first_word_not_the_reason(self):
-        self.assertEqual(am.gpt_tier("## Tier\nhigh — scripts/automerge.py: expands automatic merge eligibility "
-                                     "from low to low or medium risk.\n"), "high")
-        self.assertEqual(am.gpt_tier("## Tier\n**medium** - a.py: not high, more than low\n"), "medium")
-        self.assertEqual(am.author_tier("**Risk tier: medium** (not high: no gate changes)"), "medium")
-        self.assertEqual(am.author_tier("**Risk tier: high**"), "high")
-        self.assertIsNone(am.author_tier("**Risk tier: low | medium | high**"))
-
-    # Verifier on a93fe87 and 8ddbe0d: two tiers joined by a dash read as the lower one; only a value that is one
-    # tier word counts, so every such line reads as none and the merge stops.
-    def test_only_a_value_that_is_one_tier_word_counts(self):
-        for text in ("medium - high — scripts/x.py: y", "medium – high — x", "medium–high", "low, but high in x",
-                     "medium. high in parts", "high; x", "low | medium | high — <path: reason>", "low-to-medium — x",
-                     "medium - scripts/low.py: behaviour change"):
-            self.assertIsNone(am.first_tier(text), text)
-        for text, want in (("medium.", "medium"), ("**high**, because x", "high"), ("`high` — x", "high"),
-                           ("**medium** - a.py: not high", "medium"), ("high — a.py: from low to medium", "high"),
-                           ("medium (not high: no gate)", "medium")):
-            self.assertEqual(am.first_tier(text), want, text)
-        self.assertIsNone(am.author_tier("Risk tier: **medium – high**"))
-        self.assertEqual(am.author_tier("**Risk tier: medium.** This **loosens the review gate**"), "medium")
-        self.assertEqual(am.author_tier("**Risk tier: high.** It takes the highest of the three tiers, not low."), "high")
-
-    def test_load_records_follows_since(self):
-        gate = pathlib.Path(tempfile.mkdtemp())
-        result = {"sha": SHA, "mode": "standard", "tier": "low", "lanes": [], "findings": []}
-        s = "11111111-2222-3333-4444-555555555555"
-        (gate / f"{SHA}.review.md").write_text(rr.render("PASS", SHA, result, "r", s, "PASS", since=OLD))
-        (gate / f"{SHA}.gpt.md").write_text(GPT_LOW)
-        (gate / f"{OLD}.review.md").write_text(rr.render("PASS", OLD, {**result, "sha": OLD}, "r", s, "PASS"))
-        (gate / f"{OLD}.gpt.md").write_text(GPT_MED)
-        recs = am.load_records(gate, SHA)
-        self.assertEqual([r["sha"] for r in recs], [SHA, OLD])
-        self.assertEqual([r["gpt"] for r in recs], ["low", "medium"])
+    # PR #13 and the verifier on a93fe87 / 8ddbe0d / c982ba2: only `<tier> — <reason>` counts.
+    def test_codex_tier_only_in_its_exact_form(self):
+        line = "## Tier\n{}\n"
+        self.assertEqual(am.gpt_tier(line.format("high — scripts/automerge.py: from low to low or medium risk.")),
+                         "high")
+        for text in ("medium - high — x", "medium – high — x", "**medium** - **high** — x", "**high** — x",
+                     "high", "high—a.py", "low | medium | high — <path: reason>", "low-to-medium — x"):
+            self.assertIsNone(am.gpt_tier(line.format(text)), text)
 
 
 class Message(unittest.TestCase):
-    TIERS = {"PR 쓴 에이전트": "low", "Claude 검증": "low", "Codex 리뷰": None}
+    TIERS = {"Claude 검증": "low", "Codex 리뷰": None}
 
     # User, 2026-10-29: the report had no repo name, said "작성자 low" and "GPT 없음", and nobody could read it.
     def test_report_names_the_repo_and_speaks_plainly(self):
@@ -170,7 +137,7 @@ class Message(unittest.TestCase):
                           STATUS, "shadow", None)
         self.assertIn("[r #12] 확인 필요", text)
         self.assertIn("리뷰 통과 · 테스트 통과 · CI 통과 · 충돌 없음", text)
-        self.assertIn("PR 쓴 에이전트 낮음 · Claude 검증 낮음 · Codex 리뷰 없음", text)
+        self.assertIn("Claude 검증 낮음 · Codex 리뷰 없음", text)
         self.assertIn("하나라도 '높음'이면 사용자 확인", text)
         for jargon in (" low", "GPT", "작성자"):
             self.assertNotIn(jargon, text)

@@ -72,7 +72,7 @@ run it with `<python> .verify/<name>.py`.
 
    Set `tier` yourself from the whole diff (not the commit's scope) by `references/tiers.md`, and name the
    changed path that decides it in `tier_reason`. Do not copy the author's tier: below high the change merges
-   without the user, and the merge takes the highest of the author's, yours and the GPT lane's.
+   without the user, and the merge takes the higher of yours and the Codex review's (the author's is not read).
 
    `result.json`:
    ```json

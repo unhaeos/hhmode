@@ -31,5 +31,8 @@ decides it:
 
 ```
 ## Tier
-low | medium | high — <path: one-line reason>
+<tier> — <path: one-line reason>
 ```
+
+`<tier>` is exactly one of `low`, `medium`, `high`: one plain word (no bold, no range), then a space, an em dash and
+a space. The merge reads only this form; anything else counts as no tier and stops the merge.
