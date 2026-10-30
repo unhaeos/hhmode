@@ -231,8 +231,11 @@ if ! head -n 1 "$rec" | grep -qF "· $mode ·"; then
 fi
 # A PR that closes an issue is judged against its acceptance criteria: a record without the criteria table means the
 # verifier skipped them (verifier on 5342eef: the launcher checked the session and the mode, not this).
-if [ -s "$work/issues.md" ] && ! grep -q '^### Acceptance criteria' "$rec"; then
-  echo "NO CRITERIA: issues.md lists acceptance criteria, but the record for ${sha:0:7} has no criteria table." >&2
+# Only when an issue names criteria: one written before the form, with no ACn ids, has none to judge and gets no table
+# (verifier on 5f3ba7a: the check refused every rerun of such a branch).
+ncrit=$( [ -s "$work/issues.md" ] && python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import record_review as rr; print(len(rr.issue_criteria(open(sys.argv[2], encoding="utf-8").read())))' "$here/scripts" "$work/issues.md" 2>/dev/null || echo 0)
+if [ "${ncrit:-0}" -gt 0 ] && ! grep -q '^### Acceptance criteria' "$rec"; then
+  echo "NO CRITERIA: the issues name $ncrit acceptance criteria, but the record for ${sha:0:7} has no criteria table." >&2
   KEEP=1; echo "kept $vdir for inspection" >&2
   exit 1
 fi
