@@ -603,9 +603,10 @@ class Carry(unittest.TestCase):
     # Verifier on 79691db: a carry overwrote a verifier's ISSUES record on the same commit.
     def test_a_verifier_record_on_this_commit_is_never_overwritten(self):
         second = self.wording_commit()
-        self.review(second, verdict="ISSUES")
-        self.assertEqual(self.carry(self.first), 2)
-        self.assertTrue(self.record(second).startswith("**Review: ISSUES**"))
+        for verdict in ("ISSUES", "BLOCKED", "PASS"):       # BLOCKED: verifier on 04d2ec9
+            self.review(second, verdict=verdict)
+            self.assertEqual(self.carry(self.first), 2, verdict)
+            self.assertTrue(self.record(second).startswith(f"**Review: {verdict}**"), verdict)
 
     def test_a_repo_with_a_verify_step_needs_this_commits_verify_record(self):
         (self.repo / "scripts").mkdir()

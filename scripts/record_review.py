@@ -279,8 +279,9 @@ def carry(repo: pathlib.Path, since: str) -> pathlib.Path:
         raise Refused(f"--carry {full[:7]} is not an ancestor of {sha[:7]}")
     gdir = gate_dir(repo)
     mine = gdir / f"{sha}.review.md"
-    if mine.exists() and reviewed(mine.read_text(encoding="utf-8")) is not None:
-        # A verifier's own record on this commit is never replaced by a carried one (verifier on 79691db).
+    if mine.exists() and " · carry · " not in mine.read_text(encoding="utf-8").split("\n", 1)[0]:
+        # A record a verifier wrote on this commit, whatever its verdict, is never replaced by a carried one: a
+        # BLOCKED record would otherwise turn into a PASS the gates read (verifier on 79691db and 04d2ec9).
         raise Refused(f"{sha[:7]} already has a verifier's record; a carry would overwrite it")
     rec = gdir / f"{full}.review.md"
     text = rec.read_text(encoding="utf-8") if rec.exists() else ""
