@@ -278,6 +278,10 @@ def carry(repo: pathlib.Path, since: str) -> pathlib.Path:
     if subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", full, sha]).returncode != 0:
         raise Refused(f"--carry {full[:7]} is not an ancestor of {sha[:7]}")
     gdir = gate_dir(repo)
+    mine = gdir / f"{sha}.review.md"
+    if mine.exists() and reviewed(mine.read_text(encoding="utf-8")) is not None:
+        # A verifier's own record on this commit is never replaced by a carried one (verifier on 79691db).
+        raise Refused(f"{sha[:7]} already has a verifier's record; a carry would overwrite it")
     rec = gdir / f"{full}.review.md"
     text = rec.read_text(encoding="utf-8") if rec.exists() else ""
     if not carryable(text):

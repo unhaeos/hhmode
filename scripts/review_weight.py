@@ -71,11 +71,11 @@ def weight(repo: pathlib.Path | str, since: str | None, head: str) -> tuple[str,
     s7 = since[:7]
     paths = changed_paths(repo, since, head)
     rec = rr.gate_dir(repo) / f"{since}.review.md"
+    # A commit since then that closes an issue rules out a carry only; the size checks below still decide between
+    # fix and standard (verifier on 79691db: returning fix here skipped them).
     closes = new_closes(repo, since, head)
-    if closes and all(is_wording(p) for p in paths):
-        return "fix", (f"Only wording changed since {s7}, but a commit since then closes #{closes[0]}, so a verifier "
-                       "judges its acceptance criteria.")
-    if all(is_wording(p) for p in paths) and rec.exists() and rr.carryable(rec.read_text(encoding="utf-8")):
+    if not closes and all(is_wording(p) for p in paths) and rec.exists() and \
+            rr.carryable(rec.read_text(encoding="utf-8")):
         what = f"Only wording changed since {s7} ({', '.join(paths)})" if paths else f"Nothing changed since {s7}"
         return "carry", f"{what} and that review passed, so its result carries over without a new review."
     lines, binary = size(repo, since, head)
@@ -86,7 +86,10 @@ def weight(repo: pathlib.Path | str, since: str | None, head: str) -> tuple[str,
         return "standard", f"{lines} lines changed since {s7}, more than {FIX_LINES}, so the change gets a full review."
     if new:
         return "standard", f"The change since {s7} adds a new file ({new[0]}), so it gets a full review."
-    return "fix", f"{lines} lines changed since {s7} and no file was added, so one verifier checks the fix."
+    why = f"{lines} lines changed since {s7} and no file was added, so one verifier checks the fix."
+    if closes:
+        why += f" A commit since then closes #{closes[0]}, so the verifier judges its acceptance criteria."
+    return "fix", why
 
 
 if __name__ == "__main__":

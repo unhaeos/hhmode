@@ -119,10 +119,15 @@ echo "review: $kind. $reason"
 # Wording only: nothing to run, so no worktree, no Codex, no Claude.
 if [ "$kind" = carry ]; then
   if [ "${PRINT_PROMPT:-0}" = "1" ]; then echo "(dry run: no record written)"; exit 0; fi
-  python3 "$here/scripts/record_review.py" --repo "$src" --carry "$since"
-  echo "record: $gate/$sha.review.md"
-  paste_lines "$gate/$sha.review.md" "$gate/$sha.verify.json"
-  exit 0
+  if python3 "$here/scripts/record_review.py" --repo "$src" --carry "$since"; then
+    echo "record: $gate/$sha.review.md"
+    paste_lines "$gate/$sha.review.md" "$gate/$sha.verify.json"
+    exit 0
+  fi
+  # A carry the record script refuses (this commit has no verify record of its own in a repo with a verify step, a
+  # failed one, or a verifier's record already) gets one verifier instead of stopping (verifier on 79691db).
+  kind=fix; reason="The earlier result could not be carried (see above), so one verifier checks this commit."
+  echo "review: $kind. $reason"
 fi
 
 # k-defense-kg expects task worktrees under .claude/worktrees (wt_env.sh assigns ports there). Any other repo gets

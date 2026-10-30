@@ -73,6 +73,13 @@ class Weight(unittest.TestCase):
         self.assertEqual(kind, "fix")
         self.assertIn("#7", why)
 
+    # Verifier on 79691db: the Closes rule returned fix before the new-file and size checks.
+    def test_closes_rules_out_carry_but_not_the_size_checks(self):
+        self.review(self.first)
+        self.write("docs/new.md", "a new page\n")
+        self.commit("docs: add a page\n\nCloses #7")
+        self.assertEqual(self.kind(), "standard")       # a new file, even under docs/
+
     def test_the_first_review_on_a_branch_is_standard(self):
         for since in (None, ""):
             kind, reason = rw.weight(self.repo, since, "HEAD")
