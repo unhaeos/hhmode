@@ -7,8 +7,9 @@ Run by /pr after CI: `python3 ~/projects/hhmode/scripts/automerge.py <PR number>
 1. Facts, checked here for the PR's head commit. Any that fails stops the merge, and the merge check never starts:
   - the verifier's record says Review PASS and verify PASS (gate/<sha>.review.md, written by record_review.py);
   - the Codex review exists (gate/<sha>.gpt.md, copied by verify_fresh.sh);
-  - nobody rated the risk high: not the author (PR body), the verifier, nor Codex (references/tiers.md); a
-    re-review scoped `since` an earlier commit also counts that commit's tiers;
+  - neither the verifier nor Codex rated the risk high (references/tiers.md); a re-review scoped `since` an
+    earlier commit also counts that commit's tiers. The author's tier in the PR body is not read: it is free text,
+    and the author is the one who wants the merge;
   - GitHub says the PR is open into main and mergeable, and no check is failing or still running.
 2. The merge check: a fresh headless Claude that wrote and verified nothing reads the PR, the issues it closes, the
    repo's CLAUDE.md, the records and the diff (skills/code-review/merge-check.md) and answers merge or not, with a
@@ -45,27 +46,16 @@ VERDICT_KO = {"PASS": "통과", "ISSUES": "지적 있음", "BLOCKED": "못 돌�
 HEAD_RE = re.compile(r"^\*\*Review: (\w+)\*\* · ([0-9a-f]{7,40}) · (\w+)(?: · since ([0-9a-f]{7,40}))?")
 
 
-def author_tier(body: str) -> str | None:
-    """The tier in the PR body's "Risk tier:" field (a line that starts with it, bold allowed), or None when there is
-    no such field, when it holds more than one tier word (the template's `low | medium | high` placeholder), or when
-    two fields disagree. Prose that merely mentions a risk tier does not count (GPT lane on 08df90d)."""
-    found = set()
-    for line in (body or "").splitlines():
-        m = re.match(r"^\s*\**\s*risk tier\s*:(.*)$", line, re.I)
-        if m:
-            words = set(re.findall(r"\b(low|medium|high)\b", m.group(1).lower()))
-            if len(words) != 1:
-                return None
-            found |= words
-    return found.pop() if len(found) == 1 else None
+CODEX_TIER = re.compile(r"(low|medium|high) — \S")   # the one form gpt-reviewer.md asks for; all 24 real records
 
 
 def gpt_tier(text: str) -> str | None:
-    """The tier on the line after `## Tier`, or None unless that line holds exactly one tier word (an unfilled
-    `low | medium | high` or `low-to-medium` must not read as low; verifier note on 08df90d)."""
+    """The tier on the line after `## Tier`, only in the exact form `<tier> — <reason>`; anything else reads as none
+    and the merge stops. Reading tier words out of free text kept finding a lower tier than written ("medium - high",
+    "medium – high", "**medium** - **high**": verifier on a93fe87, 8ddbe0d, c982ba2)."""
     m = re.search(r"^## Tier\s*\n+(.*)$", text or "", re.M | re.I)
-    words = set(re.findall(r"\b(low|medium|high)\b", m.group(1).lower())) if m else set()
-    return words.pop() if len(words) == 1 else None
+    t = CODEX_TIER.match(m.group(1)) if m else None
+    return t.group(1) if t else None
 
 
 def record_fields(text: str) -> dict:
@@ -107,9 +97,9 @@ def decide(pr: dict, records: list[dict]) -> tuple[bool, list[str], dict, dict]:
         reasons.append(f"리뷰 {status['review']}")
     if head["verify"] != "PASS":
         reasons.append(f"검증 {status['verify']}")
-    tiers = {"PR 쓴 에이전트": author_tier(pr.get("body", ""))}
-    if tiers["PR 쓴 에이전트"] is None:
-        reasons.append("PR 본문의 위험도 칸이 없거나 비어 있음")
+    # The author's tier in the PR body is for the reader, not the decision: it is free text, and the author is the
+    # one who wants the merge (pstack). The verifier and Codex rate the change independently, in fixed forms.
+    tiers = {}
     for i, r in enumerate(records):
         tag = "" if i == 0 else f"({r.get('sha', '')[:7]})"
         tiers[f"Claude 검증{tag}"] = r["tier"]
