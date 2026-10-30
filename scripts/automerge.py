@@ -45,6 +45,17 @@ VERDICT_KO = {"PASS": "통과", "ISSUES": "지적 있음", "BLOCKED": "못 돌�
 HEAD_RE = re.compile(r"^\*\*Review: (\w+)\*\* · ([0-9a-f]{7,40}) · (\w+)(?: · since ([0-9a-f]{7,40}))?")
 
 
+TIER_HEAD = re.compile(r"\s*\**\s*(low|medium|high)\b\s*\**(?:\s+[—–-]\s|\s*[:(]|\s*$)", re.I)
+
+
+def first_tier(text: str) -> str | None:
+    """The tier a field starts with, before its reason. Counting tier words over the whole line read Codex's
+    "high — scripts/automerge.py: ... from low to low or medium risk" (b0f58f9, PR #13) as no tier; an unfilled
+    `low | medium | high` or a `low-to-medium` still reads as none."""
+    m = TIER_HEAD.match(text or "")
+    return m.group(1).lower() if m else None
+
+
 def author_tier(body: str) -> str | None:
     """The tier in the PR body's "Risk tier:" field (a line that starts with it, bold allowed), or None when there is
     no such field, when it holds more than one tier word (the template's `low | medium | high` placeholder), or when
@@ -53,10 +64,10 @@ def author_tier(body: str) -> str | None:
     for line in (body or "").splitlines():
         m = re.match(r"^\s*\**\s*risk tier\s*:(.*)$", line, re.I)
         if m:
-            words = set(re.findall(r"\b(low|medium|high)\b", m.group(1).lower()))
-            if len(words) != 1:
+            tier = first_tier(m.group(1))
+            if tier is None:
                 return None
-            found |= words
+            found.add(tier)
     return found.pop() if len(found) == 1 else None
 
 
@@ -64,8 +75,7 @@ def gpt_tier(text: str) -> str | None:
     """The tier on the line after `## Tier`, or None unless that line holds exactly one tier word (an unfilled
     `low | medium | high` or `low-to-medium` must not read as low; verifier note on 08df90d)."""
     m = re.search(r"^## Tier\s*\n+(.*)$", text or "", re.M | re.I)
-    words = set(re.findall(r"\b(low|medium|high)\b", m.group(1).lower())) if m else set()
-    return words.pop() if len(words) == 1 else None
+    return first_tier(m.group(1)) if m else None
 
 
 def record_fields(text: str) -> dict:

@@ -124,6 +124,15 @@ class Parse(unittest.TestCase):
         self.assertIsNone(am.gpt_tier("## Tier\nlow | medium | high — <path: reason>\n"))
         self.assertIsNone(am.gpt_tier("## Tier\nlow-to-medium — x\n"))
 
+    # PR #13: Codex's reason named other tiers ("from low to low or medium"), and the whole line was counted.
+    def test_the_tier_is_the_first_word_not_the_reason(self):
+        self.assertEqual(am.gpt_tier("## Tier\nhigh — scripts/automerge.py: expands automatic merge eligibility "
+                                     "from low to low or medium risk.\n"), "high")
+        self.assertEqual(am.gpt_tier("## Tier\n**medium** - a.py: not high, more than low\n"), "medium")
+        self.assertEqual(am.author_tier("**Risk tier: medium** (not high: no gate changes)"), "medium")
+        self.assertEqual(am.author_tier("**Risk tier: high**"), "high")
+        self.assertIsNone(am.author_tier("**Risk tier: low | medium | high**"))
+
     def test_load_records_follows_since(self):
         gate = pathlib.Path(tempfile.mkdtemp())
         result = {"sha": SHA, "mode": "standard", "tier": "low", "lanes": [], "findings": []}
