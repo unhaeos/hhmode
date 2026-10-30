@@ -45,15 +45,17 @@ VERDICT_KO = {"PASS": "통과", "ISSUES": "지적 있음", "BLOCKED": "못 돌�
 HEAD_RE = re.compile(r"^\*\*Review: (\w+)\*\* · ([0-9a-f]{7,40}) · (\w+)(?: · since ([0-9a-f]{7,40}))?")
 
 
-TIER_HEAD = re.compile(r"\s*\**\s*(low|medium|high)\b\s*\**(?:\s+[—–-]\s|\s*[:(]|\s*$)", re.I)
+TIER_REASON = re.compile(r"[—–:(.,;]")   # where a tier field's reason starts; a plain hyphen is not one
 
 
 def first_tier(text: str) -> str | None:
-    """The tier a field starts with, before its reason. Counting tier words over the whole line read Codex's
-    "high — scripts/automerge.py: ... from low to low or medium risk" (b0f58f9, PR #13) as no tier; an unfilled
-    `low | medium | high` or a `low-to-medium` still reads as none."""
-    m = TIER_HEAD.match(text or "")
-    return m.group(1).lower() if m else None
+    """The tier a field names before its reason starts, when exactly one tier word stands there. Counting tier words
+    over the whole line read Codex's "high — scripts/automerge.py: ... from low to low or medium risk" (b0f58f9,
+    PR #13) as no tier. Taking the first word read "medium - high — x" as medium, lower than written (verifier on
+    a93fe87). An unfilled `low | medium | high` or a `low-to-medium` reads as none."""
+    head = TIER_REASON.split(text or "", maxsplit=1)[0]
+    words = re.findall(r"\b(low|medium|high)\b", head.lower())
+    return words[0] if len(set(words)) == 1 and len(words) == 1 else None
 
 
 def author_tier(body: str) -> str | None:

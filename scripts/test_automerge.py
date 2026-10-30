@@ -133,6 +133,16 @@ class Parse(unittest.TestCase):
         self.assertEqual(am.author_tier("**Risk tier: high**"), "high")
         self.assertIsNone(am.author_tier("**Risk tier: low | medium | high**"))
 
+    # Verifier on a93fe87: two tiers joined by a hyphen read as the first (lower) one (P1), and punctuation after
+    # the word read as no tier (P2; PR #9's real body).
+    def test_two_tiers_read_as_none_and_punctuation_ends_the_tier(self):
+        self.assertIsNone(am.gpt_tier("## Tier\nmedium - high — scripts/x.py: y\n"))
+        self.assertIsNone(am.author_tier("Risk tier: medium - high"))
+        for text, want in (("medium.", "medium"), ("**high**, because x", "high"), ("high; x", "high"),
+                           ("`high` — x", "high"), ("high—a.py", "high"), ("**medium** - a.py: not high", "medium")):
+            self.assertEqual(am.first_tier(text), want, text)
+        self.assertEqual(am.author_tier("**Risk tier: medium.** This **loosens the review gate**"), "medium")
+
     def test_load_records_follows_since(self):
         gate = pathlib.Path(tempfile.mkdtemp())
         result = {"sha": SHA, "mode": "standard", "tier": "low", "lanes": [], "findings": []}
