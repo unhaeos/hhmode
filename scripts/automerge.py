@@ -6,7 +6,8 @@ Run by /pr after the verifier: `python3 ~/projects/hhmode/scripts/automerge.py <
 A PR merges on its own only when all of these hold for its head commit:
   - the verifier's record says Review PASS and verify PASS (gate/<sha>.review.md, written by record_review.py);
   - the GPT lane's review exists (gate/<sha>.gpt.md, copied by verify_fresh.sh);
-  - the highest of the author's tier (PR body), the verifier's and the GPT lane's is low (references/tiers.md);
+  - the highest of the author's tier (PR body), the verifier's and the GPT lane's is low or medium
+    (references/tiers.md; high goes to the user — user decision 2026-10-30, it was low only);
     a re-review scoped `since` an earlier commit also counts the tiers recorded for that commit;
   - GitHub says the PR is open and mergeable, and no check is failing or still running.
 Anything else goes to the user, with the reasons. The merge pins the reviewed commit (--match-head-commit), so a
@@ -29,6 +30,7 @@ import urllib.request
 HERE = pathlib.Path(__file__).resolve().parent.parent          # hhmode root
 ORDER = {"low": 0, "medium": 1, "high": 2}
 UNKNOWN = "unknown"                 # merged, but the merge commit could not be read back
+MAX_AUTO = "medium"                 # the highest tier that merges without the user (user decision 2026-10-30)
 TIER_KO = {"low": "낮음", "medium": "중간", "high": "높음"}
 VERDICT_KO = {"PASS": "통과", "ISSUES": "지적 있음", "BLOCKED": "못 돌림", "FAIL": "실패"}
 HEAD_RE = re.compile(r"^\*\*Review: (\w+)\*\* · ([0-9a-f]{7,40}) · (\w+)(?: · since ([0-9a-f]{7,40}))?")
@@ -109,7 +111,7 @@ def decide(pr: dict, records: list[dict]) -> tuple[bool, list[str], dict, dict]:
         if r["gpt"] is None:
             reasons.append(f"이 검증{tag}에서 Codex 리뷰가 돌지 않았거나 위험도를 못 읽음")
     top = max((v for v in tiers.values() if v in ORDER), key=ORDER.get, default=None)
-    if top and top != "low":
+    if top and ORDER[top] > ORDER[MAX_AUTO]:
         reasons.append(f"위험도 {TIER_KO[top]}")
     if pr.get("mergeable") != "MERGEABLE":
         reasons.append(f"병합 불가 상태({pr.get('mergeable')})")
@@ -156,7 +158,7 @@ def message(pr: dict, merge: bool, reasons: list[str], tiers: dict, status: dict
     lines = [f"*[{repo} #{pr['number']}] {head}* — {pr['title']}",
              f"• 리뷰 {status['review']} · 테스트 {status['verify']} · CI {CI_KO.get(status['ci'], status['ci'])}"
              f" · {MERGEABLE_KO.get(status['mergeable'], status['mergeable'])}",
-             "• 위험도(셋 다 '낮음'이어야 자동 병합): "
+             f"• 위험도(셋 다 '{TIER_KO[MAX_AUTO]}' 이하여야 자동 병합): "
              + " · ".join(f"{k} {TIER_KO.get(v, '없음')}" for k, v in tiers.items())]
     if error:
         lines.append(f"• 병합 명령이 실패함: {error}")

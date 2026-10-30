@@ -45,7 +45,7 @@ REQUIRED = {
 VALIDATED = {"CONFIRMED", "PLAUSIBLE", "REJECTED"}
 SERIOUS = {"P0", "P1"}
 SEVERITIES = {"P0", "P1", "P2", "P3", "rule"}
-# references/tiers.md. A low tier lets scripts/automerge.py merge without the user, so it is required, never defaulted.
+# references/tiers.md. Below high, scripts/automerge.py merges without the user, so it is required, never defaulted.
 TIERS = {"low", "medium", "high"}
 # Who raised a finding: lane names, joined with "+" when several raised it. The log had 25 spellings of four
 # reviewers ("opus", "Opus", "Opusfull", "Fable)", ...), so the fix rate per reviewer could not be counted.

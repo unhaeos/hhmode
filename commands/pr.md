@@ -48,8 +48,12 @@ Turn the current branch into a reviewable pull request. One task, one branch, on
 
 7. **Post the verifier's record on the PR.** `gh pr comment <number> --body-file <git common dir>/gate/<sha>.review.md` — the file the verifier wrote, unedited. The comment names the commit it reviewed; a later push makes it stale, and the next `/pr` run posts a new one.
    **Updating an open PR** (new commits after review fixes): re-run step 4 for the new head, then `gh pr edit <number> --body-file <tmp>` with the new `Review:`/`Verify:` lines **before** pushing, then push. A gated repo's CI ("리뷰·검증 관문") reads the body and is red while the lines name an older commit.
-8. **Auto-merge check.** Once CI has finished (`gh pr checks <number> --watch`), run `python3 ~/projects/hhmode/scripts/automerge.py <number>` from this worktree. It merges the reviewed commit only when the verifier's review and verify are PASS, the GPT lane ran, the highest of the author's, the verifier's and the GPT lane's tier is low (`skills/code-review/references/tiers.md`), the PR is mergeable and CI is green; otherwise it tells the user why. Either way it reports to Slack. Until `~/projects/hhmode/local/automerge` says `on` it only reports what it would have done (trial run from 2026-10-29). Run it again after every new verification of an open PR.
-9. **Report.** Print the PR URL, the verdict line, the automerge line, and anything the reviewer must look at first.
+8. **Auto-merge check.** Once CI has finished (`gh pr checks <number> --watch`), run `python3 ~/projects/hhmode/scripts/automerge.py <number>` from this worktree. It merges the reviewed commit only when the verifier's review and verify are PASS, the GPT lane ran, the highest of the author's, the verifier's and the GPT lane's tier is low or medium (`skills/code-review/references/tiers.md`; high goes to the user), the PR is mergeable and CI is green; otherwise it tells the user why. Either way it reports to Slack. It merges only while `~/projects/hhmode/local/automerge` says `on`; otherwise it reports what it would have done.
+9. **Stay with the PR until it merges or goes to the user.** You own this PR from build to merge (pstack `autopilot-full`: one owner carries each PR). When automerge.py did not merge, act on its reasons here:
+   - CI failing, or the PR conflicts with main: fix it as a new commit (for a conflict, `git merge origin/main`; never rebase a pushed branch), run step 4 on the new head, push, post the new record (step 7) and run step 8 again.
+   - Review ISSUES: fix the finding the same way, or leave it and say why in the PR.
+   - Risk tier high, a lane BLOCKED for a reason you cannot fix, or three rounds without a merge: stop. The PR goes to the user (or `/land`); say why in the report.
+10. **Report.** Print the PR URL, the verdict line, the automerge line, and anything the reviewer must look at first.
 
 ## Rules
 

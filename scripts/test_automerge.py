@@ -52,10 +52,16 @@ class Decide(unittest.TestCase):
 
     # k-defense-kg #35: the author called a dependency pin low.
     def test_highest_tier_wins_over_the_authors(self):
-        merge, reasons, *_ = am.decide(pr(), [rec(tier="medium")])
+        merge, reasons, *_ = am.decide(pr(), [rec(tier="high")])
         self.assertFalse(merge)
-        self.assertIn("위험도 중간", reasons)
+        self.assertIn("위험도 높음", reasons)
         self.assertFalse(am.decide(pr(), [rec(gpt="high")])[0])
+
+    # User, 2026-10-30: up to medium merges without the user; high still goes to them.
+    def test_medium_merges_high_does_not(self):
+        merge, reasons, *_ = am.decide(pr(body="**Risk tier: medium**"), [rec(tier="medium", gpt="medium")])
+        self.assertTrue(merge, reasons)
+        self.assertFalse(am.decide(pr(body="**Risk tier: high**"), [rec(tier="medium", gpt="medium")])[0])
 
     def test_missing_codex_review_goes_to_the_user(self):
         merge, reasons, *_ = am.decide(pr(), [rec(gpt=None)])
@@ -95,9 +101,9 @@ class Decide(unittest.TestCase):
 
     # A re-review scoped `since` an earlier commit saw only the new diff; the earlier commit's tiers still count.
     def test_tiers_from_the_since_ancestor_count(self):
-        merge, reasons, tiers, _ = am.decide(pr(), [rec(since=OLD[:7]), rec(sha=OLD, gpt="medium")])
+        merge, reasons, tiers, _ = am.decide(pr(), [rec(since=OLD[:7]), rec(sha=OLD, gpt="high")])
         self.assertFalse(merge)
-        self.assertIn("위험도 중간", reasons)
+        self.assertIn("위험도 높음", reasons)
         self.assertIn(f"Codex 리뷰({OLD[:7]})", tiers)
 
 
@@ -141,7 +147,7 @@ class Message(unittest.TestCase):
         self.assertIn("[r #12] 확인 필요", text)
         self.assertIn("리뷰 통과 · 테스트 통과 · CI 통과 · 충돌 없음", text)
         self.assertIn("PR 쓴 에이전트 낮음 · Claude 검증 낮음 · Codex 리뷰 없음", text)
-        self.assertIn("셋 다 '낮음'이어야 자동 병합", text)
+        self.assertIn("셋 다 '중간' 이하여야 자동 병합", text)
         for jargon in (" low", "GPT", "작성자"):
             self.assertNotIn(jargon, text)
 
