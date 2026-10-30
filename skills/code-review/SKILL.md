@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Code review before a commit, push or PR, delegated to fresh-context subagents — an Opus bug reviewer that may read the repo and run tests, a Sonnet rules reviewer, then an Opus validator that tries to reproduce every P0/P1 finding; only confirmed or clearly plausible findings reach the user. Standard mode runs on every PR (`/pr` calls it); full mode (high risk tier or `--full`) adds independent reviewers with different inputs and models. Use whenever the user asks to "review my changes", "review this diff", "check my code before commit", "코드 리뷰", "리뷰해줘", "커밋 전에 봐줘", "PR 올리기 전 검토", or invokes /code-review. Always trigger this skill instead of reviewing directly — a same-context reviewer rubber-stamps its own work.
+description: Code review before a commit, push or PR, delegated to fresh-context subagents — an Opus bug reviewer that may read the repo and run tests, a Sonnet rules reviewer, then an Opus validator that tries to reproduce every P0/P1 finding; only confirmed or clearly plausible findings reach the user. Standard mode runs on every PR (`/pr` calls it); full mode (high risk tier or `--full`) runs the same reviewers as standard. Use whenever the user asks to "review my changes", "review this diff", "check my code before commit", "코드 리뷰", "리뷰해줘", "커밋 전에 봐줘", "PR 올리기 전 검토", or invokes /code-review. Always trigger this skill instead of reviewing directly — a same-context reviewer rubber-stamps its own work.
 ---
 
 # Code Review
@@ -36,26 +36,34 @@ An author running this skill on its own change gets advice, not a gate record (p
 | Mode | When | Reviewers |
 |---|---|---|
 | **standard** | default; `/pr` runs it on every PR | bug-reviewer (Opus, full context) + rules-reviewer (Sonnet) |
-| **full** | risk tier high, or `--full` | standard + bug-reviewer on **Fable** (`model: fable`) |
+| **full** | risk tier high, or `--full` | the same reviewers as standard; nothing extra runs. Only Step 5 (lead judgment) is added |
 
 Both modes also get a GPT reviewer (lane `bug-gpt`, Codex), since every other lane is an Anthropic
 model and a same-family reviewer shares the author's blind spots (pstack runs Opus with Grok).
-In the gate, `verify_fresh.sh` runs it before the verifier starts. It reads the diff plus the
-changed files, because Codex cannot run commands on this machine. For a review outside the gate, run
-`python3 scripts/gpt_review_input.py <repo> <base> | codex exec -s read-only --ephemeral -o <out>
-"$(cat skills/code-review/gpt-reviewer.md)"` from the hhmode root and validate its P0/P1 like
-any other.
+In the gate, `verify_fresh.sh` starts it in the background, at the same time as the verifier, and the
+verifier waits for it before recording. It reads the diff plus the changed files, because Codex cannot
+run commands on this machine, and answers in JSON (`gpt-review.schema.json`). For a review outside the
+gate, run `python3 scripts/gpt_review_input.py <repo> <base> | codex exec -s read-only --ephemeral
+--output-schema skills/code-review/gpt-review.schema.json -o <out.json> "$(cat skills/code-review/gpt-reviewer.md)"`
+from the hhmode root, then `python3 scripts/codex_review.py <out.json>` to read it as markdown, and
+validate its P0/P1 like any other.
 
 Risk tier comes from the repo's CLAUDE.md when it defines one (e.g. k-defense-kg: DB schema, KG
 loads, API contracts, prompt ground truth = high).
 
-Full mode used to add a bug-reviewer given only the diff (Anthropic plugin). It was dropped on
-2026-10-29: in k-defense-kg's review log (88 rows) it raised 5 findings and no P0/P1. Opus with full
-context raised about 10 P0/P1, and Fable 2–3 that Opus missed.
+Full mode used to add a bug-reviewer on **Fable** (`model: fable`, lane `bug-fable`), and before that a
+bug-reviewer given only the diff (Anthropic's plugin). Both were dropped. The diff-only one raised 5
+findings and no P0/P1 in k-defense-kg's review log (88 rows, 2026-10-29). In the review logs
+(`~/.claude/review-log/*.tsv`) every P0/P1 Fable raised was also raised by Opus; Fable alone raised only
+P2/P3. The Codex lane now gives a second model's view, and Fable costs tokens (user decision 2026-10-30).
+Old records and logs that say `full` or `bug-fable` stay valid.
 
 A re-review reads only the diff since the last reviewed commit (pstack `autopilot-full`:
 re-verify in proportion to the change), and checks that the earlier record's P0/P1 findings and
-rule violations were addressed. Verify and the live lane still run on the new commit.
+rule violations were addressed. Verify and the live lane still run on the new commit. In the gate
+the size of that diff sets the weight (`scripts/review_weight.py`): wording only gets no verifier, a
+small fix gets one verifier with the lanes bug, verify and live, and anything else gets a standard
+review.
 
 ## Step 1 — Detect what to review
 
@@ -93,8 +101,6 @@ the report language (the user's language).
 
 - `subagent_type: bug-reviewer` — intent, diff, repo path, rubric, test commands.
 - `subagent_type: rules-reviewer` — diff and the base-branch rule files.
-- full mode only: `subagent_type: bug-reviewer` with `model: fable` and the same material as the
-  first one.
 
 ## Step 4 — Validate every P0/P1 finding
 
@@ -148,7 +154,7 @@ gets one — it does not certify a commit.
 
 `record_review.py` appends one row per finding to `~/.claude/review-log/<repo>.tsv`:
 `date  sha  mode  id  severity  path:line  raised_by  validation  title`. `raised_by` is a lane
-name (`bug`, `rules`, `bug-fable`, `live`, `verify`), joined with `+`. For a review outside a
+name (`bug`, `rules`, `bug-gpt`, `live`, `verify`), joined with `+` (`bug-fable` in old rows). For a review outside a
 gate, append the same rows yourself. Later, a finding counts as **fixed** if its lines change
 before merge. The fix rate per reviewer/model is the number to tune against (OpenAI reports
 52.7%, Google ~40%, Meta 19.7% for their systems).

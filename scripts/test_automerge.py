@@ -126,6 +126,60 @@ class Decide(unittest.TestCase):
         self.assertIn(f"Codex review ({OLD[:7]})", tiers)
 
 
+class Chain(unittest.TestCase):
+    """The Codex review is a fact of the standard review at the bottom of a chain of `since` records. A fix round ran
+    without Codex and a carried record borrows the earlier review's result, so neither needs one of its own."""
+
+    def test_a_fix_on_top_of_a_standard_review_merges(self):
+        merge, reasons, tiers, _ = am.decide(pr(), [rec(mode="fix", gpt=None, since=OLD[:7]),
+                                                    rec(mode="standard", sha=OLD, gpt="low")])
+        self.assertTrue(merge, reasons)
+        self.assertEqual(list(tiers), ["Claude verifier", f"Claude verifier ({OLD[:7]})", f"Codex review ({OLD[:7]})"])
+
+    def test_a_carried_head_merges_with_or_without_its_own_copy_of_the_codex_review(self):
+        for gpt in ("low", None):
+            merge, reasons, *_ = am.decide(pr(), [rec(mode="carry", gpt=gpt, since=OLD[:7]),
+                                                  rec(mode="standard", sha=OLD, gpt="low")])
+            self.assertTrue(merge, (gpt, reasons))
+
+    def test_a_chain_with_no_codex_review_anywhere_goes_to_the_author(self):
+        for chain in ([rec(mode="fix", gpt=None, since=OLD[:7]), rec(mode="fix", sha=OLD, gpt=None)],
+                      [rec(mode="carry", gpt=None)],
+                      [rec(mode="fix", gpt=None, since=OLD[:7]), rec(mode="standard", sha=OLD, gpt=None)]):
+            merge, reasons, *_ = am.decide(pr(), chain)
+            self.assertFalse(merge)
+            self.assertEqual(sum("Codex" in r for r in reasons), 1, reasons)      # said once, not once per record
+
+    def test_a_standard_or_old_full_head_still_needs_its_own_codex_review(self):
+        for mode in ("standard", "full", None):
+            merge, reasons, *_ = am.decide(pr(), [rec(mode=mode, gpt=None)])
+            self.assertFalse(merge, mode)
+            self.assertTrue(any("Codex" in r for r in reasons), mode)
+        # ... also when an earlier standard review in the chain has one
+        merge, reasons, *_ = am.decide(pr(), [rec(mode="standard", gpt=None, since=OLD[:7]),
+                                              rec(mode="standard", sha=OLD, gpt="low")])
+        self.assertFalse(merge)
+
+    def test_a_fix_head_does_not_hide_a_high_tier_from_the_chain(self):
+        merge, reasons, *_ = am.decide(pr(), [rec(mode="fix", gpt=None, since=OLD[:7]),
+                                              rec(mode="standard", sha=OLD, gpt="high")])
+        self.assertFalse(merge)
+        self.assertIn("risk tier high", reasons)
+
+    def test_load_records_follows_a_carried_head_to_the_review_it_took(self):
+        gate = pathlib.Path(tempfile.mkdtemp())
+        s = "11111111-2222-3333-4444-555555555555"
+        result = {"sha": OLD, "mode": "standard", "tier": "medium", "lanes": [], "findings": []}
+        (gate / f"{OLD}.review.md").write_text(rr.render("PASS", OLD, result, "r", s, "PASS"))
+        (gate / f"{OLD}.gpt.md").write_text(GPT_MED)
+        (gate / f"{SHA}.review.md").write_text(rr.render_carry(SHA, OLD, ["README.md"], "medium"))
+        recs = am.load_records(gate, SHA)
+        self.assertEqual([(r["sha"], r["mode"], r["gpt"]) for r in recs],
+                         [(SHA, "carry", None), (OLD, "standard", "medium")])
+        merge, reasons, *_ = am.decide(pr(), recs)
+        self.assertTrue(merge, reasons)
+
+
 class Parse(unittest.TestCase):
     # The fields are read from what record_review.py actually writes, so a format change breaks this test.
     def test_record_fields_from_a_real_record(self):
@@ -133,7 +187,18 @@ class Parse(unittest.TestCase):
         text = rr.render("PASS", SHA, result, "report", "11111111-2222-3333-4444-555555555555", "PASS",
                          since=OLD)
         self.assertEqual(am.record_fields(text),
-                         {"review": "PASS", "since": OLD[:7], "verify": "PASS", "tier": "medium"})
+                         {"review": "PASS", "since": OLD[:7], "mode": "standard", "verify": "PASS", "tier": "medium"})
+
+    def test_record_fields_read_the_mode_of_every_kind_of_record(self):
+        result = {"sha": SHA, "mode": "fix", "tier": "low", "lanes": [], "findings": []}
+        fix = rr.render("PASS", SHA, result, "r", "s" * 36, "PASS", since=OLD)
+        self.assertEqual(am.record_fields(fix)["mode"], "fix")
+        carry = rr.render_carry(SHA, OLD, ["README.md"], "low")
+        self.assertEqual(am.record_fields(carry), {"review": "PASS", "since": OLD[:7], "mode": "carry",
+                                                   "verify": "PASS", "tier": "low"})
+        full = "**Review: PASS** · ccccccc · full · verifier 1\n\n<!-- verifier-session: s; verify: PASS; lanes: -->\n"
+        self.assertEqual(am.record_fields(full)["mode"], "full")
+        self.assertIsNone(am.record_fields("")["mode"])
 
     # Verifier note on 08df90d (P3): an unfilled tier line read as low.
     def test_gpt_tier(self):
@@ -439,6 +504,12 @@ class MergeCheck(unittest.TestCase):
         self.assertIn("merge-check-", cwd)
         self.assertIn("--safe-mode", args)
         self.assertIn("--tools", args)
+
+    # Verifier on 4c93a55 (P3): the empty folder was made with mkdtemp and never removed.
+    def test_the_empty_folder_is_removed_afterwards(self):
+        self.run_with("""echo '{"structured_output": {"merge": true, "reason": "x"}}'\n""")
+        cwd = self.seen.read_text().splitlines()[0]
+        self.assertFalse(pathlib.Path(cwd).exists())
 
     def test_empty_output_reports_stderr(self):
         got = self.run_with("echo 'credit balance too low' >&2\nexit 1\n")

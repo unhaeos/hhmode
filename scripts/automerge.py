@@ -6,7 +6,9 @@ Run by /pr after CI: `python3 ~/projects/hhmode/scripts/automerge.py <PR number>
 
 1. Facts, checked here for the PR's head commit. Any that fails stops the merge, and the merge check never starts:
   - the verifier's record says Review PASS and verify PASS (gate/<sha>.review.md, written by record_review.py);
-  - the Codex review exists (gate/<sha>.gpt.md, copied by verify_fresh.sh);
+  - the Codex review exists (gate/<sha>.gpt.md, copied by verify_fresh.sh). A standard review (and an old `full` one)
+    needs its own. A fix or carry record, which ran without Codex or took an earlier review's result, is exempt, but
+    the chain of `since` records must still hold one Codex review;
   - neither the verifier nor Codex rated the risk high (references/tiers.md); a re-review scoped `since` an
     earlier commit also counts that commit's tiers. The author's tier in the PR body is not read: it is free text,
     and the author is the one who wants the merge;
@@ -45,6 +47,7 @@ HERE = pathlib.Path(__file__).resolve().parent.parent          # hhmode root
 ORDER = {"low": 0, "medium": 1, "high": 2}
 UNKNOWN = "unknown"                 # merged, but the merge commit could not be read back
 MAX_AUTO = "medium"                 # the highest tier that merges without the user (user decision 2026-10-30)
+LIGHT = ("fix", "carry")            # records that need no Codex review of their own (review_weight.py)
 VERDICT_WORDS = {"PASS": "passed", "ISSUES": "found issues", "BLOCKED": "could not run", "FAIL": "failed"}
 HEAD_RE = re.compile(r"^\*\*Review: (\w+)\*\* · ([0-9a-f]{7,40}) · (\w+)(?: · since ([0-9a-f]{7,40}))?")
 
@@ -61,6 +64,7 @@ def record_fields(text: str) -> dict:
     head = HEAD_RE.match(text or "")
     meta = re.search(r"<!-- verifier-session: [^;]+; verify: (\w+); (?:tier: (\w+); )?lanes:", text or "")
     return {"review": head.group(1) if head else None, "since": head.group(4) if head else None,
+            "mode": head.group(3) if head else None,
             "verify": meta.group(1) if meta else None, "tier": meta.group(2) if meta else None}
 
 
@@ -80,7 +84,7 @@ def checks_state(rollup: list) -> str:
 
 
 def decide(pr: dict, records: list[dict]) -> tuple[bool, list[str], dict, dict]:
-    """Pure. `records`: the head commit's first, then each `since` ancestor's, each {review, verify, tier, gpt}.
+    """Pure. `records`: the head commit's first, then each `since` ancestor's, each {review, mode, verify, tier, gpt}.
     Returns (merge, reasons it may not, tiers seen, state of each check), worded for the user."""
     reasons, head = [], records[0]
     status = {"review": VERDICT_WORDS.get(head["review"], head["review"] or "no record"),
@@ -99,16 +103,21 @@ def decide(pr: dict, records: list[dict]) -> tuple[bool, list[str], dict, dict]:
     # The author's tier in the PR body is for the reader, not the decision: it is free text, and the author is the
     # one who wants the merge (pstack). The verifier and Codex rate the change independently, in fixed forms.
     tiers = {}
+    no_codex = "the Codex review did not run for this verification{}, or its risk tier could not be read"
     for i, r in enumerate(records):
         tag = "" if i == 0 else f" ({r.get('sha', '')[:7]})"
+        light = r.get("mode") in LIGHT
         tiers[f"Claude verifier{tag}"] = r["tier"]
-        tiers[f"Codex review{tag}"] = r["gpt"]
+        if r["gpt"] is not None or not light:
+            tiers[f"Codex review{tag}"] = r["gpt"]
         if r["tier"] is None:
             reasons.append(f"no Claude verifier record{tag}" if r["review"] is None
                            else f"the Claude verifier record{tag} has no risk tier (written before the field existed)")
-        if r["gpt"] is None:
-            reasons.append(f"the Codex review did not run for this verification{tag}, or its risk tier "
-                           "could not be read")
+        if r["gpt"] is None and not light:
+            reasons.append(no_codex.format(tag))
+    # Fix and carry records are exempt one by one, but a chain made only of them has no Codex review at all.
+    if all(r.get("mode") in LIGHT and r["gpt"] is None for r in records):
+        reasons.append(no_codex.format(""))
     top = max((v for v in tiers.values() if v in ORDER), key=ORDER.get, default=None)
     if top and ORDER[top] > ORDER[MAX_AUTO]:
         reasons.append(f"risk tier {top}")
@@ -135,7 +144,7 @@ def load_records(gate: pathlib.Path, sha: str) -> list[dict]:
         seen.add(sha)
         rec = next(iter(sorted(gate.glob(f"{sha}*.review.md"))), None)
         gpt = next(iter(sorted(gate.glob(f"{sha}*.gpt.md"))), None)
-        f = record_fields(rec.read_text(encoding="utf-8")) if rec else {"review": None, "verify": None,
+        f = record_fields(rec.read_text(encoding="utf-8")) if rec else {"review": None, "verify": None, "mode": None,
                                                                        "tier": None, "since": None}
         f["text"] = rec.read_text(encoding="utf-8") if rec else ""
         f["gpt_text"] = gpt.read_text(encoding="utf-8") if gpt else ""
@@ -208,8 +217,8 @@ def merge_check(text: str) -> dict:
     def no(why: str) -> dict:
         return {"merge": False, "reason": f"the merge check could not answer: {why.strip()[:300]}", "session": ""}
     try:
-        run = subprocess.run(cmd, input=text, cwd=tempfile.mkdtemp(prefix="merge-check-"), capture_output=True,
-                             text=True, timeout=900)
+        with tempfile.TemporaryDirectory(prefix="merge-check-") as d:      # removed when the check is done
+            run = subprocess.run(cmd, input=text, cwd=d, capture_output=True, text=True, timeout=900)
     except (subprocess.SubprocessError, OSError) as e:
         return no(str(e))
     try:

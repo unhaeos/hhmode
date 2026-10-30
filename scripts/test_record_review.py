@@ -105,16 +105,32 @@ class Check(unittest.TestCase):
         self.assertEqual(rr.check(result(), SHA, "FAIL"), "ISSUES")
         self.assertEqual(rr.check(result(), SHA, "BLOCKED"), "BLOCKED")
 
-    def test_full_mode_needs_its_extra_lanes(self):
+    # A fix round re-reviews a small change under a standard review: no rules lane, no Codex.
+    def test_fix_mode_needs_only_bug_verify_and_live(self):
+        lanes = [ln for ln in result()["lanes"] if ln["lane"] in ("bug", "live")]
+        self.assertEqual(rr.check(result(mode="fix", lanes=lanes), SHA, "PASS"), "PASS")
+        for missing in ("bug", "live"):
+            with self.assertRaises(rr.Refused):
+                rr.check(result(mode="fix", lanes=[ln for ln in lanes if ln["lane"] != missing]), SHA, "PASS")
+        self.assertEqual(rr.REQUIRED["fix"], ("bug", "verify", "live"))
+
+    def test_fix_lanes_are_still_held_to_this_commit_and_to_the_verify_record(self):
+        lanes = [{"lane": "bug", "sha": OLD, "status": "ran"}, {"lane": "live", "sha": SHA, "status": "ran",
+                                                               "evidence": "curl -> 200"}]
+        with self.assertRaises(rr.Refused):
+            rr.check(result(mode="fix", lanes=lanes), SHA, "PASS")
+        lanes[0]["sha"] = SHA
+        self.assertEqual(rr.check(result(mode="fix", lanes=lanes), SHA, "FAIL"), "ISSUES")
+        self.assertEqual(rr.check(result(mode="fix", lanes=lanes), SHA, "BLOCKED"), "BLOCKED")
+
+    # User, 2026-10-30: Fable dropped (every P0/P1 it raised, Opus raised too). `full` is no mode for a new record.
+    def test_full_is_no_longer_a_mode_and_standard_needs_no_fable_lane(self):
         with self.assertRaises(rr.Refused):
             rr.check(result(mode="full"), SHA, "PASS")
+        self.assertNotIn("bug-fable", rr.REQUIRED["standard"])
+        self.assertEqual(sorted(rr.REQUIRED), ["fix", "standard"])
 
-    def test_full_mode_no_longer_needs_a_diff_only_lane(self):
-        # 2026-10-29: the diff-only lane raised no P0/P1 in 88 k-defense-kg review-log rows
-        lanes = result()["lanes"] + [{"lane": "bug-fable", "sha": SHA, "status": "ran"}]
-        self.assertEqual(rr.check(result(mode="full", lanes=lanes), SHA, "PASS"), "PASS")
-
-    def test_both_modes_need_the_gpt_lane(self):
+    def test_standard_needs_the_gpt_lane(self):
         # the only reviewer from another company; without it every lane is an Anthropic model
         lanes = [ln for ln in result()["lanes"] if ln["lane"] != "bug-gpt"]
         with self.assertRaises(rr.Refused):
@@ -127,7 +143,7 @@ class Check(unittest.TestCase):
         for who in ("opus", "bug-reviewer(opus)", "Fable)", "bug, rules", "", None):
             with self.assertRaises(rr.Refused):
                 rr.check(result(findings=[{"id": "F1", "severity": "P3", "raised_by": who}]), SHA, "PASS")
-        ok = {"id": "F1", "severity": "P3", "raised_by": "bug+bug-fable"}
+        ok = {"id": "F1", "severity": "P3", "raised_by": "bug+bug-fable"}      # old logs and records stay valid
         self.assertEqual(rr.check(result(findings=[ok]), SHA, "PASS"), "PASS")
 
     # A missing or loose tier ("Low", "none") must not reach automerge.py as low by default.
@@ -212,7 +228,8 @@ class Render(unittest.TestCase):
         self.assertEqual(text.splitlines()[0], f"**Review: PASS** · {SHA[:7]} · standard · verifier 11111111")
         m = am.HEAD_RE.match(text)
         self.assertEqual((m.group(1), m.group(2), m.group(3)), ("PASS", SHA[:7], "standard"))
-        self.assertEqual(am.record_fields(text), {"review": "PASS", "since": None, "verify": "PASS", "tier": "medium"})
+        self.assertEqual(am.record_fields(text),
+                         {"review": "PASS", "since": None, "mode": "standard", "verify": "PASS", "tier": "medium"})
         self.assertEqual(rr.reviewed_as(text), "standard")
         since = rr.render("PASS", SHA, result(), "r", SESSION, "PASS", since=OLD)
         self.assertEqual(am.record_fields(since)["since"], OLD[:7])
@@ -281,8 +298,12 @@ class EndToEnd(unittest.TestCase):
 
     def _write(self, verify="PASS", **over):
         (self.gate / f"{self.sha}.verify.json").write_text(json.dumps({"sha": self.sha, "verdict": verify}))
-        r = result(sha=self.sha, lanes=[{**ln, "sha": self.sha} for ln in result()["lanes"]], **over)
+        r = result(**{"sha": self.sha, "lanes": self._lanes("bug", "bug-gpt", "rules", "live"), **over})
         self.res.write_text(json.dumps(r), encoding="utf-8")
+
+    def _lanes(self, *names):
+        """The standard lanes by name, on the current commit."""
+        return [{**ln, "sha": self.sha} for ln in result()["lanes"] if ln["lane"] in names]
 
     def _main(self, mode="standard", since=None):
         return rr.main(["--repo", str(self.repo), "--result", str(self.res), "--report", str(self.rep),
@@ -356,17 +377,25 @@ class EndToEnd(unittest.TestCase):
         self.assertFalse((self.gate / f"{self.sha}.review.md").exists())
 
     def test_since_a_weaker_mode_is_refused(self):
-        # F2: a full review scoped to a standard one never has Fable read the diff before it
-        first = self._second_commit(mode="standard")
-        lanes = [{**ln, "sha": None} for ln in result()["lanes"]] + [{"lane": "bug-fable", "status": "ran"}]
-        self._write(mode="full")
-        r = json.loads(self.res.read_text(encoding="utf-8"))
-        r["lanes"] = [{**ln, "sha": self.sha} for ln in lanes]
-        self.res.write_text(json.dumps(r), encoding="utf-8")
-        self.assertEqual(self._main(mode="full", since=first), 2)
+        # a standard review scoped to a fix review would leave the rules lane and Codex never reading the diff before it
+        first = self._second_commit(mode="fix")
+        self._write()
+        self.assertEqual(self._main(mode="standard", since=first), 2)
         (self.gate / f"{first}.review.md").write_text(
-            f"**Review: PASS** · {first[:7]} · full · verifier 9\n\n<!-- verifier-session: 9 -->\n", encoding="utf-8")
-        self.assertEqual(self._main(mode="full", since=first), 0)
+            f"**Review: PASS** · {first[:7]} · standard · verifier 9\n\n<!-- verifier-session: 9 -->\n",
+            encoding="utf-8")
+        self.assertEqual(self._main(mode="standard", since=first), 0)
+
+    # 2026-10-30: `full` is gone as a mode, but a record that says it counts like standard.
+    def test_since_an_old_full_record_counts_like_standard(self):
+        first = self._second_commit(mode="full")
+        self._write()
+        self.assertEqual(self._main(mode="standard", since=first), 0)
+
+    def test_since_a_standard_record_is_fine_for_a_fix(self):
+        first = self._second_commit(mode="standard")
+        self._write(mode="fix", lanes=self._lanes("bug", "live"))
+        self.assertEqual(self._main(mode="fix", since=first), 0)
 
     def test_since_the_commit_itself_or_a_non_ancestor_is_refused(self):
         self._second_commit()
@@ -380,10 +409,41 @@ class EndToEnd(unittest.TestCase):
             encoding="utf-8")
         self.assertEqual(self._main(since=other), 2)
 
-    # Found by the verifier on hhmode #3 (F2, F3, F1).
-    def test_full_request_reported_as_standard_is_refused(self):
+    # Found by the verifier on hhmode #3 (F2, F3, F1): the mode asked for is the launcher's, not the verifier's.
+    def test_a_fix_request_reported_as_standard_is_refused(self):
+        first = self._second_commit()
+        self._write()                                         # the result says standard
+        self.assertEqual(self._main(mode="fix", since=first), 2)
+        self.assertFalse((self.gate / f"{self.sha}.review.md").exists())
+
+    def test_full_is_not_a_mode_to_ask_for_any_more(self):
         self._write()
-        self.assertEqual(self._main(mode="full"), 2)
+        with self.assertRaises(SystemExit):
+            self._main(mode="full")
+
+    # A fix is judged against what it fixes; with no --since nothing says what that is.
+    def test_a_fix_record_needs_since(self):
+        self._write(mode="fix", lanes=self._lanes("bug", "live"))
+        self.assertEqual(self._main(mode="fix"), 2)
+        self.assertFalse((self.gate / f"{self.sha}.review.md").exists())
+        self.assertFalse((self.logs / "myrepo.tsv").exists())
+
+    def test_a_fix_record_with_since_is_written_and_logged_as_fix(self):
+        first = self._second_commit()
+        self._write(mode="fix", lanes=self._lanes("bug", "live"))
+        self.assertEqual(self._main(mode="fix", since=first), 0)
+        rec = (self.gate / f"{self.sha}.review.md").read_text(encoding="utf-8")
+        self.assertEqual(rec.splitlines()[0],
+                         f"**Review: PASS** · {self.sha[:7]} · fix · since {first[:7]} · verifier 11111111")
+        self.assertEqual(rr.reviewed_as(rec), "fix")
+        self.assertEqual(am.record_fields(rec)["mode"], "fix")
+        row = (self.logs / "myrepo.tsv").read_text(encoding="utf-8").split("\t")
+        self.assertEqual(row[2], "fix")
+
+    def test_a_fix_record_missing_its_bug_lane_is_refused(self):
+        first = self._second_commit()
+        self._write(mode="fix", lanes=self._lanes("live"))
+        self.assertEqual(self._main(mode="fix", since=first), 2)
 
     def test_verify_record_with_an_unknown_verdict_is_refused(self):
         self._write(verify="")
@@ -452,6 +512,192 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(self._main(), 0)
         rec = (self.gate / f"{self.sha}.review.md").read_text(encoding="utf-8")
         self.assertTrue(rec.startswith("**Review: ISSUES**"))
+
+
+class Legacy(unittest.TestCase):
+    """Records written before `full` was dropped (2026-10-30) still parse everywhere and count like standard."""
+    FULL = ("**Review: PASS** · aaaaaaa · full · since bbbbbbb · verifier 11111111\n\n"
+            "<!-- verifier-session: s; verify: PASS; tier: medium; lanes: bug@aaaaaaa:ran -->\n")
+
+    def test_a_full_record_parses_and_counts_like_standard(self):
+        self.assertEqual(rr.reviewed_as(self.FULL), "full")
+        self.assertEqual(rr.STRENGTH["full"], rr.STRENGTH["standard"])
+        self.assertLess(rr.STRENGTH["fix"], rr.STRENGTH["standard"])
+        m = am.HEAD_RE.match(self.FULL)
+        self.assertEqual((m.group(1), m.group(2), m.group(3), m.group(4)), ("PASS", "aaaaaaa", "full", "bbbbbbb"))
+        self.assertEqual(am.record_fields(self.FULL),
+                         {"review": "PASS", "since": "bbbbbbb", "mode": "full", "verify": "PASS", "tier": "medium"})
+        self.assertTrue(rr.carryable(self.FULL))
+
+    def test_the_old_fable_lane_is_still_a_valid_raiser_in_old_logs(self):
+        self.assertIn("bug-fable", rr.RAISERS)
+
+
+class Carry(unittest.TestCase):
+    """--carry: a commit that changed wording only takes the PASS record of an earlier reviewed commit, with no
+    verifier session."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+        self.repo = self.root / "myrepo"
+        self.repo.mkdir()
+        self.git("init", "-q")
+        (self.repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+        (self.repo / "README.md").write_text("hello\n", encoding="utf-8")
+        self.first = self.commit("first")
+        self.gate = self.repo / ".git" / "gate"
+        self.gate.mkdir()
+        self.review(self.first, tier="medium")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.repo), "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    def commit(self, msg="change", **files):
+        for name, text in files.items():
+            (self.repo / name).write_text(text, encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", msg)
+        return self.git("rev-parse", "HEAD")
+
+    def review(self, sha, verdict="PASS", verify="PASS", mode="standard", tier="low"):
+        res = {"mode": mode, "tier": tier, "lanes": [], "findings": []}
+        (self.gate / f"{sha}.review.md").write_text(rr.render(verdict, sha, res, "r", SESSION, verify),
+                                                    encoding="utf-8")
+
+    def carry(self, since):
+        return rr.main(["--repo", str(self.repo), "--carry", since, "--log-dir", str(self.root / "logs")])
+
+    def record(self, sha):
+        return (self.gate / f"{sha}.review.md").read_text(encoding="utf-8")
+
+    def wording_commit(self):
+        (self.repo / "README.md").write_text("hello again\n", encoding="utf-8")
+        return self.commit()
+
+    def test_the_carried_record_has_the_agreed_form(self):
+        second = self.wording_commit()
+        self.assertEqual(self.carry(self.first), 0)
+        lines = self.record(second).splitlines()
+        self.assertEqual(lines[0], f"**Review: PASS** · {second[:7]} · carry · since {self.first[:7]} · carried")
+        self.assertEqual(lines[1], "")
+        self.assertIn("README.md", lines[2])                   # one sentence naming the changed paths
+        self.assertTrue(lines[2].startswith("Only wording changed since "))
+        self.assertEqual(lines[3], "")
+        self.assertEqual(lines[4], f"<!-- verifier-session: carried-from-{self.first}; verify: PASS; tier: medium; "
+                                   f"lanes: carried@{self.first[:7]} -->")
+        self.assertEqual(len(lines), 5)
+
+    # Verifier and Codex on 9aadb3c: the carried record said verify: PASS whatever this commit's own tests said.
+    def test_this_commits_failed_verify_is_never_carried_as_pass(self):
+        second = self.wording_commit()
+        for verdict in ("FAIL", "BLOCKED"):
+            (self.gate / f"{second}.verify.json").write_text(json.dumps({"sha": second, "verdict": verdict}))
+            self.assertEqual(self.carry(self.first), 2, verdict)
+            self.assertFalse((self.gate / f"{second}.review.md").exists())
+
+    # Verifier on 79691db: a carry overwrote a verifier's ISSUES record on the same commit.
+    def test_a_verifier_record_on_this_commit_is_never_overwritten(self):
+        second = self.wording_commit()
+        for verdict in ("ISSUES", "BLOCKED", "PASS"):       # BLOCKED: verifier on 04d2ec9
+            self.review(second, verdict=verdict)
+            self.assertEqual(self.carry(self.first), 2, verdict)
+            self.assertTrue(self.record(second).startswith(f"**Review: {verdict}**"), verdict)
+
+    def test_a_repo_with_a_verify_step_needs_this_commits_verify_record(self):
+        (self.repo / "scripts").mkdir()
+        (self.repo / "scripts" / "verify.py").write_text("print('ok')\n")
+        self.commit("add verify")
+        base = self.git("rev-parse", "HEAD")
+        self.review(base)
+        second = self.wording_commit()
+        self.assertEqual(self.carry(base), 2)
+        (self.gate / f"{second}.verify.json").write_text(json.dumps({"sha": second, "verdict": "PASS"}))
+        self.assertEqual(self.carry(base), 0)
+        self.assertIn("; verify: PASS;", self.record(second))
+
+    def test_the_gates_read_a_carried_record_but_it_is_no_review_base(self):
+        second = self.wording_commit()
+        self.assertEqual(self.carry(self.first), 0)
+        text = self.record(second)
+        self.assertEqual(am.record_fields(text), {"review": "PASS", "since": self.first[:7], "mode": "carry",
+                                                  "verify": "PASS", "tier": "medium"})
+        m = am.HEAD_RE.match(text)                              # what push_gate reads
+        self.assertTrue(second.startswith(m.group(2)))
+        self.assertIsNone(rr.reviewed_as(text))
+        self.assertFalse(rr.carryable(text))
+        third = self.commit(**{"app.py": "x = 2\n"})
+        with self.assertRaises(rr.Refused):
+            rr.check_since(self.repo, self.gate, third, second, "fix")
+
+    def test_the_codex_review_is_copied_to_the_new_commit(self):
+        second = self.wording_commit()
+        (self.gate / f"{self.first}.gpt.md").write_text("## Findings\nnone\n\n## Tier\nlow — x\n", encoding="utf-8")
+        self.assertEqual(self.carry(self.first), 0)
+        self.assertEqual((self.gate / f"{second}.gpt.md").read_text(encoding="utf-8"),
+                         "## Findings\nnone\n\n## Tier\nlow — x\n")
+
+    def test_without_a_codex_review_none_is_made_up(self):
+        second = self.wording_commit()
+        self.assertEqual(self.carry(self.first), 0)
+        self.assertFalse((self.gate / f"{second}.gpt.md").exists())
+
+    def test_nothing_is_logged_and_no_other_file_is_written(self):
+        self.wording_commit()
+        self.assertEqual(self.carry(self.first), 0)
+        self.assertFalse((self.root / "logs").exists())
+
+    def test_a_tierless_old_record_is_carried_without_inventing_a_tier(self):
+        (self.gate / f"{self.first}.review.md").write_text(
+            f"**Review: PASS** · {self.first[:7]} · standard · verifier 9\n\n"
+            "<!-- verifier-session: 9; verify: PASS; lanes: -->\n", encoding="utf-8")
+        second = self.wording_commit()
+        self.assertEqual(self.carry(self.first), 0)
+        self.assertIsNone(am.record_fields(self.record(second))["tier"])
+
+    def test_an_old_full_pass_can_be_carried(self):
+        self.review(self.first, mode="full")
+        second = self.wording_commit()
+        self.assertEqual(self.carry(self.first), 0)
+        self.assertTrue(self.record(second).startswith("**Review: PASS**"))
+
+    # Every refusal leaves no record behind.
+    def refused(self, since, sha):
+        self.assertEqual(self.carry(since), 2)
+        self.assertFalse((self.gate / f"{sha}.review.md").exists())
+
+    def test_refused_unless_the_earlier_record_is_a_pass_with_passing_tests(self):
+        second = self.wording_commit()
+        for verdict, verify in (("ISSUES", "PASS"), ("BLOCKED", "BLOCKED"), ("PASS", "FAIL")):
+            self.review(self.first, verdict=verdict, verify=verify)
+            self.refused(self.first, second)
+        (self.gate / f"{self.first}.review.md").unlink()           # no record at all
+        self.refused(self.first, second)
+
+    def test_refused_from_a_record_that_is_itself_carried(self):
+        second = self.wording_commit()
+        self.assertEqual(self.carry(self.first), 0)
+        (self.repo / "README.md").write_text("third\n", encoding="utf-8")
+        third = self.commit()
+        self.refused(second, third)
+
+    def test_refused_when_the_change_is_more_than_wording(self):
+        (self.repo / "README.md").write_text("hello again\n", encoding="utf-8")
+        second = self.commit(**{"app.py": "x = 2\n"})
+        self.refused(self.first, second)
+
+    def test_refused_for_the_commit_itself_or_a_commit_that_is_not_an_ancestor(self):
+        second = self.wording_commit()
+        self.refused(second, second)
+        self.git("checkout", "-q", "-b", "side", self.first)
+        side = self.commit("side", **{"README.md": "side\n"})
+        self.review(side)
+        self.git("checkout", "-q", second)
+        self.refused(side, second)
 
 
 if __name__ == "__main__":

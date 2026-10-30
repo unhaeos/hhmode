@@ -17,7 +17,7 @@ Closes #<n>
 | Check | Command | Result |
 |---|---|---|
 | <your own check: tests, typecheck> | `<exact command>` | <exit code, key output line> |
-| Independent verifier | `verify_fresh.sh` (standard or full) | <verdict · sha7 · verifier session id · record path> |
+| Independent verifier | `verify_fresh.sh` (standard, fix or carry) | <verdict · sha7 · verifier session id · record path> |
 
 Label each result `measured` (you ran it) or `inferred`. If something could not be run, say so here.
 

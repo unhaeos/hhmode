@@ -23,8 +23,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from automerge import HEAD_RE, record_fields  # noqa: E402  the record's reader, shared with the merge check
 
 ZERO = "0" * 40
-HOW = ("Verify as in step 4 of /pr: `bash ~/projects/hhmode/scripts/verify_fresh.sh <worktree> standard` "
-       "(`full` when the risk tier is high). A record belongs to one commit, so run it again after a new commit.")
+HOW = ("Verify as in step 4 of /pr: `bash ~/projects/hhmode/scripts/verify_fresh.sh <worktree>` (it picks a carry, "
+       "fix or standard review from what changed). A record belongs to one commit, so run it again after a new commit.")
 
 
 def git(*args: str) -> str:

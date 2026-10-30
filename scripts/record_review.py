@@ -18,11 +18,15 @@ reviewed by two lanes when one had run, a P1 skipped its validator, and no revie
 reviewed commits. pstack: "Only a verdict from an agent that did not write the code counts."
 
 Usage: record_review.py --repo <worktree> --result <result.json> --report <report.md> --session <uuid>
-                        --mode standard|full [--since <reviewed ancestor sha>] [--issues <issues.md>]
+                        --mode standard|fix [--since <reviewed ancestor sha>] [--issues <issues.md>]
+       record_review.py --repo <worktree> --carry <reviewed ancestor sha>
 
 A re-review is proportional to what changed since the last one (pstack autopilot-full): with `--since`, the
 review lanes read only the diff after a commit on this branch whose verifier record is PASS or ISSUES in at least
-this mode. Verify and live still run on this commit.
+this mode. Verify and live still run on this commit. A `fix` record is a re-review of a small change (lanes bug,
+verify, live) and always needs `--since`. With `--carry`, a change to wording only (review_weight.py) gets its
+record from the earlier PASS record, with no verifier session: such a record is not a review of its own, so no later
+`--since` can start from it.
 
 Acceptance criteria (forms.py): verify_fresh.sh writes the issues the branch closes to a file (`# Issue #<n>: <title>`
 and the body, one after another). The result then carries one `criteria` entry for each criterion in them, judged by
@@ -36,19 +40,23 @@ import datetime as dt
 import json
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 
 import forms
 
-# Full mode had a fourth lane, a bug reviewer given only the diff (Anthropic's plugin). In k-defense-kg's review
-# log (88 rows, 2026-10-29) it raised 5 findings and no P0/P1; the full-context Opus lane raised about 10 P0/P1 and
-# Fable 2-3 that Opus did not. It was dropped.
+# `fix` is a re-review of a small change (review_weight.py): no rules lane and no Codex, since the standard review
+# underneath already ran them (pstack autopilot-full: a minor fix gets a single verifier at the new head).
+# There was a `full` mode with a Fable bug reviewer (lane bug-fable) on top of standard, and before that a bug reviewer
+# given only the diff. Both were dropped: the review logs (~/.claude/review-log/*.tsv) show every P0/P1 Fable raised
+# was also raised by Opus; Fable alone raised only P2/P3. Codex (bug-gpt) now gives a second model's view, and Fable
+# costs tokens (user decision 2026-10-30). Old records that say `full` still parse and count like standard.
 REQUIRED = {
     "standard": ("bug", "rules", "bug-gpt", "verify", "live"),
-    "full": ("bug", "rules", "bug-fable", "bug-gpt", "verify", "live"),
+    "fix": ("bug", "verify", "live"),
 }
-# bug-gpt is a reviewer from another company (Codex), in both modes: every other lane is an Anthropic model, and a
+# bug-gpt is a reviewer from another company (Codex), in standard mode: every other lane is an Anthropic model, and a
 # same-family reviewer shares the author's blind spots (pstack runs Opus with Grok in its reviewer panels).
 VALIDATED = {"CONFIRMED", "PLAUSIBLE", "REJECTED"}
 SERIOUS = {"P0", "P1"}
@@ -57,6 +65,7 @@ SEVERITIES = {"P0", "P1", "P2", "P3", "rule"}
 TIERS = {"low", "medium", "high"}
 # Who raised a finding: lane names, joined with "+" when several raised it. The log had 25 spellings of four
 # reviewers ("opus", "Opus", "Opusfull", "Fable)", ...), so the fix rate per reviewer could not be counted.
+# bug-fable stays so that old logs and records are still valid; no new record has that lane.
 RAISERS = {"bug", "rules", "bug-fable", "bug-gpt", "live", "verify"}
 # The verifier's verdict on one acceptance criterion. `unclear` is for what this commit cannot decide; the merge check
 # sends such a PR to the user (merge-check.md).
@@ -200,16 +209,31 @@ def check(result: dict, sha: str, verify: str, expected: list[tuple[int, str]] =
     return "PASS"
 
 
-STRENGTH = {"standard": 1, "full": 2}
-SINCE_RE = re.compile(r"^\*\*Review: (PASS|ISSUES)\*\* · [0-9a-f]{7,40} · (standard|full)\b")
+# A review can start after one at least as strong. `full` is the old name of standard's strength.
+STRENGTH = {"fix": 0, "standard": 1, "full": 1}
+# `carry` records are left out on purpose: they are not a review, so nothing starts from them.
+SINCE_RE = re.compile(r"^\*\*Review: (PASS|ISSUES)\*\* · [0-9a-f]{7,40} · (fix|standard|full)\b")
+
+
+def reviewed(text: str) -> tuple[str, str] | None:
+    """(verdict, mode) of a verifier record, or None when it does not count as a review: no verifier session, a
+    carried record, or BLOCKED (a blocked lane still writes a record; independent review of hhmode e6968d0 reproduced a
+    PASS scoped to a BLOCKED commit whose bug lane never ran)."""
+    m = SINCE_RE.match(text)
+    return (m.group(1), m.group(2)) if m and "verifier-session:" in text else None
 
 
 def reviewed_as(text: str) -> str | None:
-    """The mode a verifier record covers, or None when it does not count as a review: no verifier session, or
-    BLOCKED (a blocked lane still writes a record; independent review of hhmode e6968d0 reproduced a PASS
-    scoped to a BLOCKED commit whose bug lane never ran)."""
-    m = SINCE_RE.match(text)
-    return m.group(2) if m and "verifier-session:" in text else None
+    """The mode a verifier record covers, or None when it does not count as a review (see `reviewed`)."""
+    got = reviewed(text)
+    return got[1] if got else None
+
+
+def carryable(text: str) -> bool:
+    """Whether a later commit that changed wording only may take this record's result: a verifier's PASS whose tests
+    passed too."""
+    got = reviewed(text)
+    return got is not None and got[0] == "PASS" and "; verify: PASS;" in text
 
 
 def check_since(repo: pathlib.Path, gdir: pathlib.Path, sha: str, since: str, mode: str) -> str:
@@ -229,6 +253,63 @@ def check_since(repo: pathlib.Path, gdir: pathlib.Path, sha: str, since: str, mo
     if STRENGTH[got] < STRENGTH[mode]:
         raise Refused(f"--since {full[:7]} was reviewed in {got} mode; a {mode} review cannot start after it")
     return full
+
+
+def render_carry(sha: str, since: str, paths: list[str], tier: str | None, verify: str = "PASS") -> str:
+    """The record of a commit that only changed wording, taken from the PASS record of `since`. The first line is
+    what the gates read (automerge.HEAD_RE: the mode is `carry`, and its `since` makes automerge read the earlier
+    record's tiers too). The tests passed on `since`: carryable() requires it."""
+    s7 = since[:7]
+    what = f"Only wording changed since {s7} ({', '.join(paths)})" if paths else f"Nothing changed since {s7}"
+    return (f"**Review: PASS** · {sha[:7]} · carry · since {s7} · carried\n\n"
+            f"{what}, so the review of {s7} carries over and no verifier session ran on this commit.\n\n"
+            f"<!-- verifier-session: carried-from-{since}; verify: {verify}; {f'tier: {tier}; ' if tier else ''}"
+            f"lanes: carried@{s7} -->\n")
+
+
+def carry(repo: pathlib.Path, since: str) -> pathlib.Path:
+    """Write HEAD's record from the PASS record of `since`, or raise Refused. The weight is decided here too, not
+    trusted from the caller: a commit that changed code must never get a record without a verifier."""
+    import review_weight        # here, not at the top: review_weight imports this module
+    sha = git(repo, "rev-parse", "HEAD")
+    full = git(repo, "rev-parse", since)
+    if full == sha:
+        raise Refused("--carry names the commit itself")
+    if subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", full, sha]).returncode != 0:
+        raise Refused(f"--carry {full[:7]} is not an ancestor of {sha[:7]}")
+    gdir = gate_dir(repo)
+    mine = gdir / f"{sha}.review.md"
+    if mine.exists() and " · carry · " not in mine.read_text(encoding="utf-8").split("\n", 1)[0]:
+        # A record a verifier wrote on this commit, whatever its verdict, is never replaced by a carried one: a
+        # BLOCKED record would otherwise turn into a PASS the gates read (verifier on 79691db and 04d2ec9).
+        raise Refused(f"{sha[:7]} already has a verifier's record; a carry would overwrite it")
+    rec = gdir / f"{full}.review.md"
+    text = rec.read_text(encoding="utf-8") if rec.exists() else ""
+    if not carryable(text):
+        raise Refused(f"{full[:7]} has no verifier record with review PASS and tests PASS to carry")
+    kind, why = review_weight.weight(repo, full, sha)
+    if kind != "carry":
+        raise Refused(f"this change is not wording only ({kind}): {why}")
+    # The tests: a verify record on this commit decides, and a FAIL or BLOCKED one is never carried over as PASS
+    # (verifier and Codex on 9aadb3c). A repo with scripts/verify.py needs one; elsewhere the earlier PASS stands,
+    # since only wording nobody executes changed.
+    own = gdir / f"{sha}.verify.json"
+    if own.exists():
+        verify = verify_verdict(gdir, sha)
+        if verify != "PASS":
+            raise Refused(f"{sha[:7]} has a verify record of {verify}; a carried record would hide it")
+    elif (repo / "scripts" / "verify.py").exists():
+        raise Refused(f"no verify record for {sha[:7]}: run the repo's verify step on this commit, then carry")
+    else:
+        verify = "PASS"
+    tier = re.search(r"; tier: (\w+); lanes:", text)
+    out = gdir / f"{sha}.review.md"
+    out.write_text(render_carry(sha, full, review_weight.changed_paths(repo, full, sha),
+                                tier.group(1) if tier else None, verify), encoding="utf-8")
+    gpt = gdir / f"{full}.gpt.md"
+    if gpt.exists():            # automerge reads the Codex tier next to the record
+        shutil.copyfile(gpt, gdir / f"{sha}.gpt.md")
+    return out
 
 
 def cell(value: object) -> str:
@@ -288,11 +369,13 @@ def log_rows(result: dict, sha: str, verdict: str) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--repo", required=True, type=pathlib.Path)
-    ap.add_argument("--result", required=True, type=pathlib.Path)
-    ap.add_argument("--report", required=True, type=pathlib.Path)
-    ap.add_argument("--session", required=True)
-    ap.add_argument("--mode", required=True, choices=sorted(REQUIRED),
+    ap.add_argument("--result", type=pathlib.Path)
+    ap.add_argument("--report", type=pathlib.Path)
+    ap.add_argument("--session")
+    ap.add_argument("--mode", choices=sorted(REQUIRED),
                     help="the mode the launcher asked for; the result must match it")
+    ap.add_argument("--carry", metavar="SINCE",
+                    help="write this commit's record from the PASS record of SINCE, no verifier (wording-only change)")
     ap.add_argument("--since", help="the review lanes read only the diff after this reviewed ancestor")
     ap.add_argument("--issues", type=pathlib.Path,
                     help="the issues the branch closes (verify_fresh.sh writes it); each criterion must be judged")
@@ -301,11 +384,25 @@ def main(argv: list[str] | None = None) -> int:
 
     repo = a.repo.resolve()
     sha = git(repo, "rev-parse", "HEAD")
+    if a.carry:
+        try:
+            out = carry(repo, a.carry)
+        except Refused as e:
+            print(f"REFUSED: {e}", file=sys.stderr)
+            return 2
+        print(f"**Review: PASS** · {sha[:7]} — carried from {a.carry[:7]}, wrote {out}")
+        return 0
+    for flag in ("result", "report", "session", "mode"):
+        if getattr(a, flag) is None:
+            ap.error(f"--{flag} is required unless --carry is given")
     result = json.loads(a.result.read_text(encoding="utf-8"))
     gdir = gate_dir(repo)
     expected = issue_criteria(a.issues.read_text(encoding="utf-8")) if a.issues else []
     try:
-        # The launcher's mode, not the verifier's: a `full` request reported as `standard` would skip lanes.
+        # A fix is judged against the diff after an earlier review: without one, nothing says what it fixed.
+        if a.mode == "fix" and not a.since:
+            raise Refused("a fix record needs --since, the reviewed commit it fixes")
+        # The launcher's mode, not the verifier's: a `standard` request reported as `fix` would skip lanes.
         if result.get("mode") != a.mode:
             raise Refused(f"result.mode is {result.get('mode')!r} but the launcher asked for {a.mode!r}")
         has_verify_step = (repo / "scripts" / "verify.py").exists()
