@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# hhmode push gate (scripts/push_gate.py): a branch tip leaves this machine only with an independent verifier's
+# record. Turn it on in a repo: git -C <repo> config core.hooksPath ~/projects/hhmode/githooks
+here="$(cd "$(dirname "$0")/.." && pwd)"
+exec python3 "$here/scripts/push_gate.py" "$@"

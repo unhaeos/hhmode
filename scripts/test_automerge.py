@@ -52,10 +52,16 @@ class Decide(unittest.TestCase):
 
     # k-defense-kg #35: the author called a dependency pin low.
     def test_highest_tier_wins_over_the_authors(self):
-        merge, reasons, *_ = am.decide(pr(), [rec(tier="medium")])
+        merge, reasons, *_ = am.decide(pr(), [rec(tier="high")])
         self.assertFalse(merge)
-        self.assertIn("위험도 중간", reasons)
+        self.assertIn("위험도 높음", reasons)
         self.assertFalse(am.decide(pr(), [rec(gpt="high")])[0])
+
+    # User, 2026-10-30: up to medium merges without the user; high still goes to them.
+    def test_medium_merges_high_does_not(self):
+        merge, reasons, *_ = am.decide(pr(body="**Risk tier: medium**"), [rec(tier="medium", gpt="medium")])
+        self.assertTrue(merge, reasons)
+        self.assertFalse(am.decide(pr(body="**Risk tier: high**"), [rec(tier="medium", gpt="medium")])[0])
 
     def test_missing_codex_review_goes_to_the_user(self):
         merge, reasons, *_ = am.decide(pr(), [rec(gpt=None)])
@@ -95,9 +101,9 @@ class Decide(unittest.TestCase):
 
     # A re-review scoped `since` an earlier commit saw only the new diff; the earlier commit's tiers still count.
     def test_tiers_from_the_since_ancestor_count(self):
-        merge, reasons, tiers, _ = am.decide(pr(), [rec(since=OLD[:7]), rec(sha=OLD, gpt="medium")])
+        merge, reasons, tiers, _ = am.decide(pr(), [rec(since=OLD[:7]), rec(sha=OLD, gpt="high")])
         self.assertFalse(merge)
-        self.assertIn("위험도 중간", reasons)
+        self.assertIn("위험도 높음", reasons)
         self.assertIn(f"Codex 리뷰({OLD[:7]})", tiers)
 
 
@@ -141,7 +147,7 @@ class Message(unittest.TestCase):
         self.assertIn("[r #12] 확인 필요", text)
         self.assertIn("리뷰 통과 · 테스트 통과 · CI 통과 · 충돌 없음", text)
         self.assertIn("PR 쓴 에이전트 낮음 · Claude 검증 낮음 · Codex 리뷰 없음", text)
-        self.assertIn("셋 다 '낮음'이어야 자동 병합", text)
+        self.assertIn("하나라도 '높음'이면 사용자 확인", text)
         for jargon in (" low", "GPT", "작성자"):
             self.assertNotIn(jargon, text)
 
@@ -170,32 +176,9 @@ class Message(unittest.TestCase):
 
     # Verifier note on f07e72f (P2): the merge went through, the lookup after it failed, and it read as a failure.
     def test_merge_then_failed_lookup_reads_as_merged(self):
-        import contextlib, io, json as js, subprocess
-        here = pathlib.Path(tempfile.mkdtemp())
-        repo = here / "repo"
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
-        (here / "local").mkdir()
-        (here / "local" / "automerge").write_text("on\n")
-        calls = []
-
-        def fake_gh(*args, cwd):
-            calls.append(args[:2])
-            if args[:2] == ("pr", "merge"):
-                return ""
-            if "mergeCommit" in args:
-                raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 502: Bad Gateway")
-            return js.dumps(pr())
-        saved = (am.gh, am.load_records, am.HERE)
-        am.gh, am.load_records, am.HERE = fake_gh, (lambda gate, sha: [rec()]), here
-        try:
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                rc = am.main(["12", "--repo", str(repo)])
-        finally:
-            am.gh, am.load_records, am.HERE = saved
-        text = out.getvalue()
+        rc, text, calls, _ = run_main(lookup_fails=True)
         self.assertEqual(rc, 0)
-        self.assertIn(("pr", "merge"), calls)
+        self.assertTrue(any(c[:2] == ("pr", "merge") for c in calls))
         self.assertIn("자동 병합*", text)
         self.assertIn("병합은 됐지만 병합 커밋 번호를 못 읽음", text)
         self.assertNotIn("실패", text)
@@ -205,6 +188,196 @@ class Message(unittest.TestCase):
         text = am.message(pr(), False, ["위험도 중간", "CI 실패"], self.TIERS, STATUS, "shadow", None)
         self.assertIn("확인 필요", text)
         self.assertIn("자동 병합 안 한 이유: 위험도 중간, CI 실패", text)
+
+
+ISSUE = {"number": 7, "url": "https://github.com/o/r/issues/7", "state": "OPEN", "title": "주간 보고 머리글",
+         "body": "프로젝트 이름을 한 번만 쓰기"}
+
+
+def run_main(pr_over=None, records=None, check=None, issue_state="OPEN", lookup_fails=False, args=(),
+             rules="", diff="diff --git a/x b/x\n+line\n", graphql_fails=False):
+    """main() with gh and the merge check faked; returns (exit code, stdout, gh calls, merge-check inputs)."""
+    import contextlib, io, json as js, subprocess
+    here = pathlib.Path(tempfile.mkdtemp())
+    repo = here / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (here / "local").mkdir()
+    (here / "local" / "automerge").write_text("on\n")
+    calls, inputs = [], []
+
+    def fake_gh(*a, cwd):
+        calls.append(a)
+        if a[:2] == ("api", "graphql"):
+            if graphql_fails:
+                raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 502: Bad Gateway")
+            return js.dumps({"data": {"repository": {"pullRequest": {"closingIssuesReferences": {"nodes": [ISSUE]}}}}})
+        if a[:2] == ("pr", "diff"):
+            return diff
+        if a[0] == "api" and "contents/CLAUDE.md" in a[-1]:
+            if rules is None:
+                raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 500: Internal Server Error")
+            if rules == "":
+                raise subprocess.CalledProcessError(1, "gh", stderr="gh: Not Found (HTTP 404)")
+            return rules
+        if a[:2] == ("issue", "view"):
+            return js.dumps({"state": issue_state})
+        if a[:2] in {("pr", "merge"), ("issue", "close"), ("pr", "comment")}:
+            return ""
+        if "mergeCommit" in a:
+            if lookup_fails:
+                raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 502: Bad Gateway")
+            return js.dumps({"mergeCommit": {"oid": "e" * 40}})
+        return js.dumps(pr(**(pr_over or {})))
+
+    def fake_check(text):
+        inputs.append(text)
+        return check or {"merge": True, "reason": "주간 보고 머리글을 한 번만 쓰게 고침.", "session": "abcd1234-x"}
+    saved = (am.gh, am.load_records, am.HERE, am.merge_check, am.CLOSE_WAIT)
+    am.gh, am.load_records, am.HERE, am.merge_check, am.CLOSE_WAIT = (
+        fake_gh, (lambda gate, sha: records or [rec()]), here, fake_check, 0)
+    try:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = am.main(["12", "--repo", str(repo), *args])
+    finally:
+        am.gh, am.load_records, am.HERE, am.merge_check, am.CLOSE_WAIT = saved
+    return rc, out.getvalue(), calls, inputs
+
+
+class Flow(unittest.TestCase):
+    """User, 2026-10-30: when CI, the verifier and the review pass, a fresh Claude checks and merges; only what
+    needs the user goes to Slack; the issue the PR closes is closed."""
+
+    def test_clean_pr_is_checked_merged_and_its_issue_closed_without_slack(self):
+        rc, text, calls, inputs = run_main()
+        self.assertIn(("pr", "merge", "12", "--squash", "--match-head-commit", SHA), calls)
+        self.assertTrue(any(c[:3] == ("issue", "close", ISSUE["url"]) and "completed" in c for c in calls))
+        self.assertTrue(any(c[:2] == ("pr", "comment") and "머지 확인(Claude, 세션 abcd1234)" in c[-1]
+                            for c in calls))
+        self.assertIn("프로젝트 이름을 한 번만 쓰기", inputs[0])         # the check reads the issue it closes
+        self.assertIn("+line", inputs[0])
+        self.assertNotIn("[slack]", text)
+        self.assertIn("automerge: MERGED", text)
+
+    def test_an_issue_github_already_closed_is_left_alone(self):
+        _, _, calls, _ = run_main(issue_state="CLOSED")
+        self.assertFalse(any(c[:2] == ("issue", "close") for c in calls))
+
+    def test_merge_check_no_goes_to_slack_unmerged(self):
+        rc, text, calls, _ = run_main(check={"merge": False, "reason": "scripts/x.py:3 가 데이터를 지움", "session": ""})
+        self.assertFalse(any(c[:2] == ("pr", "merge") for c in calls))
+        self.assertIn("머지 확인(Claude): scripts/x.py:3 가 데이터를 지움", text)
+        self.assertIn("[slack]", text)
+
+    # A fact that fails stops everything: no merge check, and no Slack — the author fixes it (/pr step 9).
+    def test_a_failing_fact_skips_the_check_and_slack(self):
+        failing = [{"status": "COMPLETED", "conclusion": "FAILURE", "name": "ci"}]
+        rc, text, calls, inputs = run_main(pr_over={"statusCheckRollup": failing})
+        self.assertEqual(inputs, [])
+        self.assertFalse(any(c[:2] == ("pr", "merge") for c in calls))
+        self.assertIn("CI 실패", text)
+        self.assertNotIn("[slack]", text)
+        _, text, _, _ = run_main(pr_over={"statusCheckRollup": failing}, args=("--report",))
+        self.assertIn("[slack]", text)
+
+    # Verifier and GPT lane on c470756: what the check cannot read must not pass, and must not crash silently.
+    def test_unreadable_input_goes_to_the_user_without_the_check(self):
+        for kw, said in ((dict(rules=None), "저장소 규칙(CLAUDE.md)을 못 읽음"),
+                         (dict(diff="+" * (am.DIFF_CAP + 1)), "머지 확인이 다 읽을 수 없음"),
+                         (dict(graphql_fails=True), "PR 정보를 못 읽음")):
+            rc, text, calls, inputs = run_main(**kw)
+            self.assertEqual(inputs, [], said)
+            self.assertFalse(any(c[:2] == ("pr", "merge") for c in calls), said)
+            self.assertIn(said, text)
+            self.assertIn("[slack]", text)
+
+    def test_the_repo_rules_reach_the_check(self):
+        _, _, _, inputs = run_main(rules="| Medium | user confirmation |")
+        self.assertIn("| Medium | user confirmation |", inputs[0])
+
+    def test_issue_comment_without_a_merge_commit_says_no_unknown(self):
+        _, _, calls, _ = run_main(lookup_fails=True)
+        close = [c for c in calls if c[:2] == ("issue", "close")][0]
+        self.assertEqual(close[-1], "#12 머지로 완료")
+
+    def test_a_high_tier_skips_the_check_and_goes_to_slack(self):
+        rc, text, calls, inputs = run_main(records=[rec(tier="high")])
+        self.assertEqual(inputs, [])
+        self.assertIn("위험도 높음", text)
+        self.assertIn("[slack]", text)
+
+
+class CheckInput(unittest.TestCase):
+    # Merge check on k-defense-kg #51: it held a medium PR back only because the record happened to quote the
+    # repo's rule; the rule is now always in its input.
+    def test_input_carries_the_pr_issue_rules_records_and_diff(self):
+        text = am.check_input(pr(body="본문"), [ISSUE], [rec(text="REC", gpt_text="GPT")], "+x\n",
+                              "Medium | user confirmation")
+        for part in ("본문", "프로젝트 이름을 한 번만 쓰기", "Medium | user confirmation", "REC", "GPT", "+x"):
+            self.assertIn(part, text)
+        self.assertNotIn("CLAUDE.md", am.check_input(pr(), [], [rec(text="", gpt_text="")], "", ""))
+
+    # GPT lane on c470756: a local ref could predate a new rule, and any failure read as "no rules".
+    def test_repo_rules_come_from_github_and_fail_closed(self):
+        import subprocess
+        asked = []
+
+        def fake_gh(*a, cwd, answer):
+            asked.append(a[-1])
+            if isinstance(answer, str):
+                return answer
+            raise subprocess.CalledProcessError(1, "gh", stderr=answer[0])
+        saved = am.gh
+        try:
+            for answer, want in (("rules\n", "rules\n"), (("gh: Not Found (HTTP 404)",), ""),
+                                 (("HTTP 502: Bad Gateway",), None)):
+                am.gh = lambda *a, cwd, answer=answer: fake_gh(*a, cwd=cwd, answer=answer)
+                self.assertEqual(am.repo_rules(pr(), "."), want)
+        finally:
+            am.gh = saved
+        self.assertEqual(asked[0], "repos/o/r/contents/CLAUDE.md?ref=main")
+
+
+class MergeCheck(unittest.TestCase):
+    """merge_check() against a stand-in `claude` on PATH."""
+
+    def run_with(self, body):
+        import os
+        bin_dir = pathlib.Path(tempfile.mkdtemp())
+        self.seen = bin_dir / "seen"
+        (bin_dir / "claude").write_text(f"#!/usr/bin/env bash\ncat > /dev/null\n{{ pwd; echo \"$@\"; }} > {self.seen}\n"
+                                        + body)
+        (bin_dir / "claude").chmod(0o755)
+        old = os.environ["PATH"]
+        os.environ["PATH"] = f"{bin_dir}:{old}"
+        try:
+            return am.merge_check("input")
+        finally:
+            os.environ["PATH"] = old
+
+    # Verifier on c470756: run in the PR's worktree, the check also read that branch's own CLAUDE.md.
+    def test_runs_in_an_empty_folder_with_customizations_off(self):
+        self.run_with("""echo '{"structured_output": {"merge": true, "reason": "x"}}'\n""")
+        cwd, args = self.seen.read_text().splitlines()[:2]
+        self.assertIn("merge-check-", cwd)
+        self.assertIn("--safe-mode", args)
+        self.assertIn("--tools", args)
+
+    def test_empty_output_reports_stderr(self):
+        got = self.run_with("echo 'credit balance too low' >&2\nexit 1\n")
+        self.assertIn("credit balance too low", got["reason"])
+
+    def test_structured_answer(self):
+        got = self.run_with("""echo '{"structured_output": {"merge": true, "reason": "문서만 바꿈"}, "session_id": "s1"}'\n""")
+        self.assertEqual(got, {"merge": True, "reason": "문서만 바꿈", "session": "s1"})
+
+    # No answer is a no: the PR goes to the user with what the check said.
+    def test_no_answer_is_a_no(self):
+        for body in ("echo 'not json'\n", """echo '{"result": "Claude Code can\\x27t use your subscription"}'\n""",
+                     "exit 1\n"):
+            got = self.run_with(body)
+            self.assertFalse(got["merge"])
+            self.assertIn("머지 확인 에이전트가 답하지 못함", got["reason"])
 
 
 if __name__ == "__main__":

@@ -71,7 +71,7 @@ run it with `<python> .verify/<name>.py`.
    it again. Never write or edit the gate record yourself.
 
    Set `tier` yourself from the whole diff (not the commit's scope) by `references/tiers.md`, and name the
-   changed path that decides it in `tier_reason`. Do not copy the author's tier: a low tier lets the change merge
+   changed path that decides it in `tier_reason`. Do not copy the author's tier: below high the change merges
    without the user, and the merge takes the highest of the author's, yours and the GPT lane's.
 
    `result.json`:
