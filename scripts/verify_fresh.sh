@@ -229,6 +229,13 @@ if ! head -n 1 "$rec" | grep -qF "· $mode ·"; then
   KEEP=1; echo "kept $vdir for inspection" >&2
   exit 1
 fi
+# A PR that closes an issue is judged against its acceptance criteria: a record without the criteria table means the
+# verifier skipped them (verifier on 5342eef: the launcher checked the session and the mode, not this).
+if [ -s "$work/issues.md" ] && ! grep -q '^### Acceptance criteria' "$rec"; then
+  echo "NO CRITERIA: issues.md lists acceptance criteria, but the record for ${sha:0:7} has no criteria table." >&2
+  KEEP=1; echo "kept $vdir for inspection" >&2
+  exit 1
+fi
 echo "record: $rec"
 # Keep the GPT review next to the record: scripts/automerge.py reads its tier, and $work goes away on exit.
 [ "$gpt_status" = ran ] && cp "$gpt" "$common/gate/$sha.gpt.md"

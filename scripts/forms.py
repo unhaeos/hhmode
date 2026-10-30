@@ -61,6 +61,21 @@ def closes(text: str) -> list[int]:
     return list(dict.fromkeys(int(n) for n in CLOSING.findall(text or "")))
 
 
+TEMPLATES = pathlib.Path(__file__).resolve().parent.parent / "templates"
+
+
+def unfilled(md: str, template: str, names: tuple[str, ...]) -> list[str]:
+    """A required section left empty, or a line of the template's <placeholder> text left as it was. Headings alone
+    passed the check (verifier and Codex on 5342eef: an empty body with the seven headings, and the bare template with
+    only Risk filled, both came back clean)."""
+    secs = sections(md)
+    out = [f"section is empty: ## {name}" for name in names if name in secs and not secs[name].strip()]
+    placeholders = {ln.strip() for ln in COMMENT.sub("", template).splitlines() if re.search(r"<[^<>\n]+>", ln)}
+    left = [ln.strip() for ln in COMMENT.sub("", md).splitlines() if ln.strip() in placeholders]
+    out += [f"template text left unfilled: {ln}" for ln in dict.fromkeys(left)]
+    return out
+
+
 def check_issue(md: str) -> list[str]:
     """What is wrong with an issue body, one line each; empty when it fills the form."""
     secs = sections(md)
@@ -68,6 +83,7 @@ def check_issue(md: str) -> list[str]:
     if "Acceptance criteria" in secs and not criteria(md):
         out.append('Acceptance criteria has no items; write each as "- [ ] AC1: <criterion>"')
     out += risk_problems(secs)
+    out += unfilled(md, (TEMPLATES / "issue.md").read_text(encoding="utf-8"), ISSUE_SECTIONS)
     return out
 
 
@@ -103,6 +119,7 @@ def check_pr(md: str, issues: dict[int, str]) -> list[str]:
                 out.append(f"Acceptance criteria does not name {ac} of issue #{n}"
                            + (f' (write "- #{n} {ac}: ...")' if len(wanted) > 1 else ""))
     out += risk_problems(secs)
+    out += unfilled(md, (TEMPLATES / "pr.md").read_text(encoding="utf-8"), PR_SECTIONS)
     return out
 
 

@@ -10,7 +10,7 @@ Land a pull request that `/pr` opened. One PR at a time: do not start the next u
 ## Steps
 
 1. **Read the PR.** `gh pr view <n> --json number,title,url,headRefName,baseRefName,isDraft,mergeable,mergeStateStatus,body`. Stop if the base is not `main`, the PR is a draft, or it is not mergeable.
-2. **Evidence.** The body must have a Verification section with a `PASS` verdict, an `Independent review` row from a reviewer that did not write the code, and a `Risk tier` line. If any is missing, stop and report what is missing. An `ISSUES` or `BLOCKED` verdict is not landed.
+2. **Evidence.** The body must have a Verification section with a `PASS` verdict, an `Independent review` row from a reviewer that did not write the code, and a `## Risk` section that starts with `<low | medium | high> — <reason>` (older bodies: a `Risk tier` line). If any is missing, stop and report what is missing. An `ISSUES` or `BLOCKED` verdict is not landed.
 3. **Tier.**
    - `low`: land without asking only if the repo's CLAUDE.md grants that for low tier.
    - `medium` / `high`, or no such grant: show the title, tier, verdict and diff stat, then ask the user once. An agent's approval never stands in for the user's.

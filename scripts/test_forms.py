@@ -138,6 +138,20 @@ class CheckIssue(unittest.TestCase):
 
 
 class CheckPr(unittest.TestCase):
+    # Verifier and Codex on 5342eef: headings alone, or the template with only Risk filled, came back clean.
+    def test_empty_sections_and_template_text_are_problems(self):
+        empty = "\n\n".join(f"## {n}\n" for n in forms.PR_SECTIONS).replace("## Risk\n", "## Risk\nlow — docs\n")
+        problems = forms.check_pr(empty, {})
+        for n in forms.PR_SECTIONS:
+            if n != "Risk":
+                self.assertIn(f"section is empty: ## {n}", problems)
+        tpl = (forms.TEMPLATES / "pr.md").read_text().replace("<low | medium | high> — <one line: the path or "
+                                                              "behaviour that decides the tier>", "low — docs")
+        problems = forms.check_pr(tpl, {7: ISSUE})
+        self.assertTrue(any(p.startswith("template text left unfilled: - AC1: <how you checked it") for p in problems),
+                        problems)
+        self.assertTrue(forms.check_issue((forms.TEMPLATES / "issue.md").read_text()))
+
     def test_a_filled_pr_is_ok(self):
         self.assertEqual(forms.check_pr(PR, {7: ISSUE}), [])
 
