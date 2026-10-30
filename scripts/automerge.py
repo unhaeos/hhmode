@@ -32,6 +32,8 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
+import time
 import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent.parent          # hhmode root
@@ -152,24 +154,36 @@ ISSUES_QUERY = ("query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$
                 "{closingIssuesReferences(first:20){nodes{number url state title body}}}}}")
 
 
+def owner_repo(pr: dict) -> tuple[str, str]:
+    return re.search(r"github\.com/([^/]+)/([^/]+)/pull/", pr["url"]).groups()
+
+
 def closing_issues(pr: dict, cwd) -> list[dict]:
     """The issues this PR closes on merge (`Closes #n` in its body, or linked by hand), from GitHub's GraphQL API."""
-    o, r = re.search(r"github\.com/([^/]+)/([^/]+)/pull/", pr["url"]).groups()
+    o, r = owner_repo(pr)
     out = gh("api", "graphql", "-f", f"query={ISSUES_QUERY}", "-F", f"o={o}", "-F", f"r={r}",
              "-F", f"n={pr['number']}", cwd=cwd)
     return json.loads(out)["data"]["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"]
 
 
-DIFF_CAP = 300_000      # characters of diff for the merge check; the verifier and Codex already read all of it
+DIFF_CAP = 300_000      # characters of diff the merge check reads; a bigger PR goes to the user (GPT lane on c470756:
+                        # a change past a cut could not be named, so it would pass)
+CLOSE_WAIT = 5          # seconds to let GitHub's own auto-close land before closing an issue ourselves
 CHECK_SCHEMA = {"type": "object", "properties": {"merge": {"type": "boolean"}, "reason": {"type": "string"}},
                 "required": ["merge", "reason"], "additionalProperties": False}
 
 
-def repo_rules(repo, base: str) -> str:
-    """The repo's CLAUDE.md on the PR's base branch, or "" when it has none. Its merge rules outrank this script's
-    defaults: k-defense-kg's section 4 sends medium to the user (merge check on k-defense-kg #51, 2026-10-30)."""
-    run = subprocess.run(["git", "-C", str(repo), "show", f"origin/{base}:CLAUDE.md"], capture_output=True, text=True)
-    return run.stdout if run.returncode == 0 else ""
+def repo_rules(pr: dict, cwd) -> str | None:
+    """The repo's CLAUDE.md on the PR's base branch as GitHub has it now, "" when there is none, None when it could
+    not be read. Its merge rules outrank this script's defaults: k-defense-kg's section 4 sends medium to the user
+    (merge check on k-defense-kg #51, 2026-10-30). Not a local ref, which may predate a new rule (GPT lane on
+    c470756); an unreadable file is not an absent one, so the caller sends the PR to the user."""
+    o, r = owner_repo(pr)
+    try:
+        return gh("api", "-H", "Accept: application/vnd.github.raw",
+                  f"repos/{o}/{r}/contents/CLAUDE.md?ref={pr['baseRefName']}", cwd=cwd)
+    except subprocess.CalledProcessError as e:
+        return "" if "HTTP 404" in (e.stderr or "") else None
 
 
 def check_input(pr: dict, issues: list[dict], records: list[dict], diff: str, rules: str = "") -> str:
@@ -181,38 +195,48 @@ def check_input(pr: dict, issues: list[dict], records: list[dict], diff: str, ru
     for r in records:
         parts.append(f"# Verifier record, {r['sha'][:7]}\n\n{r.get('text') or '(none)'}")
         parts.append(f"# Codex review, {r['sha'][:7]}\n\n{r.get('gpt_text') or '(none)'}")
-    cut = f"\n\n(diff cut at {DIFF_CAP} of {len(diff)} characters)" if len(diff) > DIFF_CAP else ""
-    parts.append(f"# Diff\n\n```diff\n{diff[:DIFF_CAP]}\n```{cut}")
+    parts.append(f"# Diff\n\n```diff\n{diff}\n```")
     return "\n\n".join(parts)
 
 
-def merge_check(text: str, cwd) -> dict:
-    """{"merge", "reason", "session"} from a fresh headless Claude with no tools. One that cannot answer is a no:
-    the PR goes to the user with what it said."""
+def merge_check(text: str) -> dict:
+    """{"merge", "reason", "session"} from a fresh headless Claude with no tools, in an empty folder with every
+    customization off (--safe-mode): run inside the PR's worktree it also read the PR branch's own CLAUDE.md, so a PR
+    could rewrite the rule it is judged by (verifier on c470756). One that cannot answer is a no: the PR goes to the
+    user with what it said."""
     cmd = ["claude", "-p", "Decide whether this pull request merges without the user. The input is on stdin.",
-           "--model", os.environ.get("MERGE_CHECK_MODEL", "claude-opus-5-5"),
+           "--safe-mode", "--model", os.environ.get("MERGE_CHECK_MODEL", "claude-opus-5-5"),
            "--append-system-prompt-file", str(HERE / "skills" / "code-review" / "merge-check.md"),
            "--tools", "", "--output-format", "json", "--json-schema", json.dumps(CHECK_SCHEMA)]
+
+    def no(why: str) -> dict:
+        return {"merge": False, "reason": f"머지 확인 에이전트가 답하지 못함: {why.strip()[:300]}", "session": ""}
     try:
-        run = subprocess.run(cmd, input=text, cwd=cwd, capture_output=True, text=True, timeout=900)
+        run = subprocess.run(cmd, input=text, cwd=tempfile.mkdtemp(prefix="merge-check-"), capture_output=True,
+                             text=True, timeout=900)
+    except (subprocess.SubprocessError, OSError) as e:
+        return no(str(e))
+    try:
         d = json.loads(run.stdout)
-        ans = d.get("structured_output") or {}
-        if isinstance(ans.get("merge"), bool) and str(ans.get("reason", "")).strip():
-            return {"merge": ans["merge"], "reason": ans["reason"].strip(), "session": d.get("session_id", "")}
-        why = str(d.get("result") or run.stderr or "답이 비어 있음")
-    except (subprocess.SubprocessError, OSError, ValueError) as e:
-        why = str(e)
-    return {"merge": False, "reason": f"머지 확인 에이전트가 답하지 못함: {why.strip()[:300]}", "session": ""}
+    except ValueError:
+        return no(run.stderr or run.stdout or f"exit {run.returncode}")
+    ans = d.get("structured_output") or {}
+    if isinstance(ans.get("merge"), bool) and str(ans.get("reason", "")).strip():
+        return {"merge": ans["merge"], "reason": ans["reason"].strip(), "session": d.get("session_id", "")}
+    return no(str(d.get("result") or run.stderr or "답이 비어 있음"))
 
 
 def close_issues(issues: list[dict], pr: dict, merged: str, cwd) -> list[str]:
-    """Close each issue the PR closes that GitHub left open. Returns the ones that failed, for the user."""
+    """Close each issue the PR closes that GitHub left open. GitHub closes them itself a moment after the merge, so
+    wait once before looking. Returns the ones that failed, for the user."""
+    if issues:
+        time.sleep(CLOSE_WAIT)
+    by = f"#{pr['number']} 머지" + (f"({merged[:7]})" if merged and merged != UNKNOWN else "")
     failed = []
     for i in issues:
         try:
             if json.loads(gh("issue", "view", i["url"], "--json", "state", cwd=cwd))["state"] != "CLOSED":
-                gh("issue", "close", i["url"], "--reason", "completed",
-                   "--comment", f"#{pr['number']} 머지({merged[:7]})로 완료", cwd=cwd)
+                gh("issue", "close", i["url"], "--reason", "completed", "--comment", f"{by}로 완료", cwd=cwd)
         except subprocess.CalledProcessError as e:
             failed.append(f"이슈 #{i['number']} 닫기 실패: {(e.stderr or str(e)).strip()[:200]}")
     return failed
@@ -290,12 +314,24 @@ def main(argv: list[str] | None = None) -> int:
 
     check, issues = None, []
     if merge and not a.dry_run:
-        issues = closing_issues(pr, repo)
-        diff = gh("pr", "diff", str(a.pr), cwd=repo)
-        check = merge_check(check_input(pr, issues, records, diff, repo_rules(repo, pr["baseRefName"])), repo)
-        if not check["merge"]:
+        # Anything the check cannot read sends the PR to the user, with the reason, instead of crashing silently
+        # after the facts passed (verifier on c470756).
+        try:
+            issues = closing_issues(pr, repo)
+            diff = gh("pr", "diff", str(a.pr), cwd=repo)
+            rules = repo_rules(pr, repo)
+            unread = ("저장소 규칙(CLAUDE.md)을 못 읽음" if rules is None
+                      else f"변경이 커서({len(diff)}자) 머지 확인이 다 읽을 수 없음" if len(diff) > DIFF_CAP else None)
+        except subprocess.CalledProcessError as e:
+            unread = f"머지 확인에 쓸 PR 정보를 못 읽음: {(e.stderr or str(e)).strip()[:200]}"
+        if unread:
             merge, for_user = False, True
-            reasons.append(f"머지 확인(Claude): {check['reason']}")
+            reasons.append(unread)
+        else:
+            check = merge_check(check_input(pr, issues, records, diff, rules))
+            if not check["merge"]:
+                merge, for_user = False, True
+                reasons.append(f"머지 확인(Claude): {check['reason']}")
 
     merged_sha = error = None
     problems: list[str] = []

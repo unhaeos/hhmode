@@ -194,7 +194,8 @@ ISSUE = {"number": 7, "url": "https://github.com/o/r/issues/7", "state": "OPEN",
          "body": "프로젝트 이름을 한 번만 쓰기"}
 
 
-def run_main(pr_over=None, records=None, check=None, issue_state="OPEN", lookup_fails=False, args=()):
+def run_main(pr_over=None, records=None, check=None, issue_state="OPEN", lookup_fails=False, args=(),
+             rules="", diff="diff --git a/x b/x\n+line\n", graphql_fails=False):
     """main() with gh and the merge check faked; returns (exit code, stdout, gh calls, merge-check inputs)."""
     import contextlib, io, json as js, subprocess
     here = pathlib.Path(tempfile.mkdtemp())
@@ -207,9 +208,17 @@ def run_main(pr_over=None, records=None, check=None, issue_state="OPEN", lookup_
     def fake_gh(*a, cwd):
         calls.append(a)
         if a[:2] == ("api", "graphql"):
+            if graphql_fails:
+                raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 502: Bad Gateway")
             return js.dumps({"data": {"repository": {"pullRequest": {"closingIssuesReferences": {"nodes": [ISSUE]}}}}})
         if a[:2] == ("pr", "diff"):
-            return "diff --git a/x b/x\n+line\n"
+            return diff
+        if a[0] == "api" and "contents/CLAUDE.md" in a[-1]:
+            if rules is None:
+                raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 500: Internal Server Error")
+            if rules == "":
+                raise subprocess.CalledProcessError(1, "gh", stderr="gh: Not Found (HTTP 404)")
+            return rules
         if a[:2] == ("issue", "view"):
             return js.dumps({"state": issue_state})
         if a[:2] in {("pr", "merge"), ("issue", "close"), ("pr", "comment")}:
@@ -220,18 +229,18 @@ def run_main(pr_over=None, records=None, check=None, issue_state="OPEN", lookup_
             return js.dumps({"mergeCommit": {"oid": "e" * 40}})
         return js.dumps(pr(**(pr_over or {})))
 
-    def fake_check(text, cwd):
+    def fake_check(text):
         inputs.append(text)
         return check or {"merge": True, "reason": "주간 보고 머리글을 한 번만 쓰게 고침.", "session": "abcd1234-x"}
-    saved = (am.gh, am.load_records, am.HERE, am.merge_check)
-    am.gh, am.load_records, am.HERE, am.merge_check = (fake_gh, (lambda gate, sha: records or [rec()]), here,
-                                                       fake_check)
+    saved = (am.gh, am.load_records, am.HERE, am.merge_check, am.CLOSE_WAIT)
+    am.gh, am.load_records, am.HERE, am.merge_check, am.CLOSE_WAIT = (
+        fake_gh, (lambda gate, sha: records or [rec()]), here, fake_check, 0)
     try:
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             rc = am.main(["12", "--repo", str(repo), *args])
     finally:
-        am.gh, am.load_records, am.HERE, am.merge_check = saved
+        am.gh, am.load_records, am.HERE, am.merge_check, am.CLOSE_WAIT = saved
     return rc, out.getvalue(), calls, inputs
 
 
@@ -271,6 +280,26 @@ class Flow(unittest.TestCase):
         _, text, _, _ = run_main(pr_over={"statusCheckRollup": failing}, args=("--report",))
         self.assertIn("[slack]", text)
 
+    # Verifier and GPT lane on c470756: what the check cannot read must not pass, and must not crash silently.
+    def test_unreadable_input_goes_to_the_user_without_the_check(self):
+        for kw, said in ((dict(rules=None), "저장소 규칙(CLAUDE.md)을 못 읽음"),
+                         (dict(diff="+" * (am.DIFF_CAP + 1)), "머지 확인이 다 읽을 수 없음"),
+                         (dict(graphql_fails=True), "PR 정보를 못 읽음")):
+            rc, text, calls, inputs = run_main(**kw)
+            self.assertEqual(inputs, [], said)
+            self.assertFalse(any(c[:2] == ("pr", "merge") for c in calls), said)
+            self.assertIn(said, text)
+            self.assertIn("[slack]", text)
+
+    def test_the_repo_rules_reach_the_check(self):
+        _, _, _, inputs = run_main(rules="| Medium | user confirmation |")
+        self.assertIn("| Medium | user confirmation |", inputs[0])
+
+    def test_issue_comment_without_a_merge_commit_says_no_unknown(self):
+        _, _, calls, _ = run_main(lookup_fails=True)
+        close = [c for c in calls if c[:2] == ("issue", "close")][0]
+        self.assertEqual(close[-1], "#12 머지로 완료")
+
     def test_a_high_tier_skips_the_check_and_goes_to_slack(self):
         rc, text, calls, inputs = run_main(records=[rec(tier="high")])
         self.assertEqual(inputs, [])
@@ -288,22 +317,25 @@ class CheckInput(unittest.TestCase):
             self.assertIn(part, text)
         self.assertNotIn("CLAUDE.md", am.check_input(pr(), [], [rec(text="", gpt_text="")], "", ""))
 
-    def test_long_diff_is_cut_and_says_so(self):
-        text = am.check_input(pr(), [], [rec(text="", gpt_text="")], "x" * (am.DIFF_CAP + 5))
-        self.assertIn(f"diff cut at {am.DIFF_CAP} of {am.DIFF_CAP + 5} characters", text)
-
-    def test_repo_rules_read_main_or_nothing(self):
+    # GPT lane on c470756: a local ref could predate a new rule, and any failure read as "no rules".
+    def test_repo_rules_come_from_github_and_fail_closed(self):
         import subprocess
-        repo = pathlib.Path(tempfile.mkdtemp())
-        g = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(repo), *a],
-                                      check=True, capture_output=True)
-        g("init", "-q", "-b", "main")
-        self.assertEqual(am.repo_rules(repo, "main"), "")
-        (repo / "CLAUDE.md").write_text("Medium | user confirmation\n")
-        g("add", ".")
-        g("commit", "-qm", "rules")
-        g("update-ref", "refs/remotes/origin/main", "HEAD")
-        self.assertEqual(am.repo_rules(repo, "main"), "Medium | user confirmation\n")
+        asked = []
+
+        def fake_gh(*a, cwd, answer):
+            asked.append(a[-1])
+            if isinstance(answer, str):
+                return answer
+            raise subprocess.CalledProcessError(1, "gh", stderr=answer[0])
+        saved = am.gh
+        try:
+            for answer, want in (("rules\n", "rules\n"), (("gh: Not Found (HTTP 404)",), ""),
+                                 (("HTTP 502: Bad Gateway",), None)):
+                am.gh = lambda *a, cwd, answer=answer: fake_gh(*a, cwd=cwd, answer=answer)
+                self.assertEqual(am.repo_rules(pr(), "."), want)
+        finally:
+            am.gh = saved
+        self.assertEqual(asked[0], "repos/o/r/contents/CLAUDE.md?ref=main")
 
 
 class MergeCheck(unittest.TestCase):
@@ -312,14 +344,28 @@ class MergeCheck(unittest.TestCase):
     def run_with(self, body):
         import os
         bin_dir = pathlib.Path(tempfile.mkdtemp())
-        (bin_dir / "claude").write_text("#!/usr/bin/env bash\ncat > /dev/null\n" + body)
+        self.seen = bin_dir / "seen"
+        (bin_dir / "claude").write_text(f"#!/usr/bin/env bash\ncat > /dev/null\n{{ pwd; echo \"$@\"; }} > {self.seen}\n"
+                                        + body)
         (bin_dir / "claude").chmod(0o755)
         old = os.environ["PATH"]
         os.environ["PATH"] = f"{bin_dir}:{old}"
         try:
-            return am.merge_check("input", bin_dir)
+            return am.merge_check("input")
         finally:
             os.environ["PATH"] = old
+
+    # Verifier on c470756: run in the PR's worktree, the check also read that branch's own CLAUDE.md.
+    def test_runs_in_an_empty_folder_with_customizations_off(self):
+        self.run_with("""echo '{"structured_output": {"merge": true, "reason": "x"}}'\n""")
+        cwd, args = self.seen.read_text().splitlines()[:2]
+        self.assertIn("merge-check-", cwd)
+        self.assertIn("--safe-mode", args)
+        self.assertIn("--tools", args)
+
+    def test_empty_output_reports_stderr(self):
+        got = self.run_with("echo 'credit balance too low' >&2\nexit 1\n")
+        self.assertIn("credit balance too low", got["reason"])
 
     def test_structured_answer(self):
         got = self.run_with("""echo '{"structured_output": {"merge": true, "reason": "문서만 바꿈"}, "session_id": "s1"}'\n""")
