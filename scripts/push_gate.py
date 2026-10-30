@@ -23,8 +23,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from automerge import HEAD_RE, record_fields  # noqa: E402  the record's reader, shared with the merge check
 
 ZERO = "0" * 40
-HOW = ("검증은 `/pr` 4단계: `bash ~/projects/hhmode/scripts/verify_fresh.sh <작업 폴더> standard` "
-       "(위험도 높음이면 full). 기록은 커밋마다 따로라, 새 커밋을 만들면 다시 돌려야 한다.")
+HOW = ("Verify as in step 4 of /pr: `bash ~/projects/hhmode/scripts/verify_fresh.sh <worktree> standard` "
+       "(`full` when the risk tier is high). A record belongs to one commit, so run it again after a new commit.")
 
 
 def git(*args: str) -> str:
@@ -57,9 +57,9 @@ def problems(stdin_text: str, gdir: pathlib.Path, remote: str, on_main=on_remote
         text = rec.read_text(encoding="utf-8") if rec.exists() else ""
         head = HEAD_RE.match(text)
         if not head or not sha.startswith(head.group(2)):
-            out.append(f"  {name} ({sha[:7]}): 독립 검증 기록이 없다")
+            out.append(f"  {name} ({sha[:7]}): no independent verification record")
         elif record_fields(text)["verify"] == "FAIL":
-            out.append(f"  {name} ({sha[:7]}): 테스트(verify)가 실패한 기록이다 — 고친 커밋을 다시 검증할 것")
+            out.append(f"  {name} ({sha[:7]}): the record says the tests (verify) failed; fix it, then verify again")
     return out
 
 
@@ -67,7 +67,7 @@ def main(argv: list[str]) -> int:
     remote = argv[1] if len(argv) > 1 else "origin"
     bad = problems(sys.stdin.read(), gate_dir(), remote)
     if bad:
-        print("push 막음 — 독립 검증을 거치지 않은 커밋이다 (hhmode scripts/push_gate.py):", file=sys.stderr)
+        print("Push blocked: no independent verification for this commit (scripts/push_gate.py):", file=sys.stderr)
         print("\n".join(bad), file=sys.stderr)
         print(HOW, file=sys.stderr)
         return 1

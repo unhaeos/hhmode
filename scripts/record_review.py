@@ -8,6 +8,7 @@ with a JSON result. This script decides the verdict mechanically and refuses rec
   - every P0/P1 finding needs a validator verdict (CONFIRMED / PLAUSIBLE / REJECTED)
   - the live lane needs evidence, or `not-applicable` with a reason
   - the verify verdict is read from <gate>/<sha>.verify.json, not from the JSON
+  - with `--issues`, every acceptance criterion of the issues the branch closes has a verdict and its evidence
 
 It writes <git common dir>/gate/<sha>.review.md (first line read by push gates) with a provenance comment
 naming the verifier session, and appends one review-log row per finding to ~/.claude/review-log/<repo>.tsv.
@@ -17,11 +18,16 @@ reviewed by two lanes when one had run, a P1 skipped its validator, and no revie
 reviewed commits. pstack: "Only a verdict from an agent that did not write the code counts."
 
 Usage: record_review.py --repo <worktree> --result <result.json> --report <report.md> --session <uuid>
-                        --mode standard|full [--since <reviewed ancestor sha>]
+                        --mode standard|full [--since <reviewed ancestor sha>] [--issues <issues.md>]
 
 A re-review is proportional to what changed since the last one (pstack autopilot-full): with `--since`, the
 review lanes read only the diff after a commit on this branch whose verifier record is PASS or ISSUES in at least
 this mode. Verify and live still run on this commit.
+
+Acceptance criteria (forms.py): verify_fresh.sh writes the issues the branch closes to a file (`# Issue #<n>: <title>`
+and the body, one after another). The result then carries one `criteria` entry for each criterion in them, judged by
+the verifier with evidence; a criterion that is not met makes the verdict ISSUES, like a confirmed P1. The record opens
+with a summary table, so a reader sees the verdict, risk and criteria before the report.
 """
 from __future__ import annotations
 
@@ -32,6 +38,8 @@ import pathlib
 import re
 import subprocess
 import sys
+
+import forms
 
 # Full mode had a fourth lane, a bug reviewer given only the diff (Anthropic's plugin). In k-defense-kg's review
 # log (88 rows, 2026-10-29) it raised 5 findings and no P0/P1; the full-context Opus lane raised about 10 P0/P1 and
@@ -50,6 +58,10 @@ TIERS = {"low", "medium", "high"}
 # Who raised a finding: lane names, joined with "+" when several raised it. The log had 25 spellings of four
 # reviewers ("opus", "Opus", "Opusfull", "Fable)", ...), so the fix rate per reviewer could not be counted.
 RAISERS = {"bug", "rules", "bug-fable", "bug-gpt", "live", "verify"}
+# The verifier's verdict on one acceptance criterion. `unclear` is for what this commit cannot decide; the merge check
+# sends such a PR to the user (merge-check.md).
+STATUSES = {"met", "not-met", "unclear"}
+ISSUE_HEAD = re.compile(r"^# Issue #(\d+):[^\n]*$", re.M)
 
 
 class Refused(Exception):
@@ -106,8 +118,34 @@ def verify_from_lane(result: dict, sha: str) -> str:
     return verdict
 
 
-def check(result: dict, sha: str, verify: str) -> str:
-    """Return the verdict, or raise Refused. Pure: no files, no git."""
+def issue_criteria(text: str) -> list[tuple[int, str]]:
+    """(issue number, criterion id) for each acceptance criterion in an issues file: `# Issue #<n>: <title>` and the
+    issue's body, one after another."""
+    parts = ISSUE_HEAD.split(text)                  # [before the first header, number, body, number, body, ...]
+    return [(int(n), ac) for n, body in zip(parts[1::2], parts[2::2]) for ac in forms.criteria(body)]
+
+
+def check_criteria(result: dict, expected: list[tuple[int, str]]) -> list[dict]:
+    """The result's verdict on each expected criterion, in order, or raise Refused: a criterion left out, a status
+    that is not met / not-met / unclear, or a met / not-met without evidence."""
+    got = {(c.get("issue"), c.get("id")): c for c in result.get("criteria", [])}
+    out = []
+    for issue, ac in expected:
+        c = got.get((issue, ac))
+        if c is None:
+            raise Refused(f"result.criteria has no entry for {ac} of issue #{issue} — judge it, with "
+                          f'{{"issue": {issue}, "id": "{ac}", "status": ..., "evidence": ...}} (issue as a number)')
+        if c.get("status") not in STATUSES:
+            raise Refused(f"{ac} of issue #{issue} has status {c.get('status')!r}; use one of {sorted(STATUSES)}")
+        if c["status"] != "unclear" and not (c.get("evidence") or "").strip():
+            raise Refused(f"{ac} of issue #{issue} is {c['status']} without evidence — run it or point to file:line")
+        out.append(c)
+    return out
+
+
+def check(result: dict, sha: str, verify: str, expected: list[tuple[int, str]] = ()) -> str:
+    """Return the verdict, or raise Refused. Pure: no files, no git. `expected`: the criteria of the issues the branch
+    closes, each of which the result must judge."""
     if result.get("sha") != sha:
         raise Refused(f"result.sha {result.get('sha')!r} is not the commit under review {sha}")
     mode = result.get("mode")
@@ -151,12 +189,13 @@ def check(result: dict, sha: str, verify: str) -> str:
         if not all(r in RAISERS for r in raisers):
             raise Refused(f"{f.get('id')} has raised_by {f.get('raised_by')!r}; use lane names from "
                           f"{sorted(RAISERS)}, joined with '+'")
+    judged = check_criteria(result, expected)
     if blocked:
         return "BLOCKED"
     live_issue = [f for f in findings
                   if (f.get("severity") in SERIOUS and f.get("validation") in {"CONFIRMED", "PLAUSIBLE"})
                   or f.get("severity") == "rule"]
-    if live_issue or verify == "FAIL":
+    if live_issue or verify == "FAIL" or any(c["status"] == "not-met" for c in judged):
         return "ISSUES"
     return "PASS"
 
@@ -192,14 +231,44 @@ def check_since(repo: pathlib.Path, gdir: pathlib.Path, sha: str, since: str, mo
     return full
 
 
+def cell(value: object) -> str:
+    """One table cell: a pipe or a line break in a command's output must not split the row."""
+    return str(value).replace("|", "\\|").replace("\n", " ").strip()
+
+
+def findings_count(result: dict) -> str:
+    """`P0 0 · P1 0 · P2 1 · P3 2` over the findings that stand (not REJECTED); rule violations are added when any."""
+    kept = [f for f in result.get("findings", []) if f.get("validation") != "REJECTED"]
+    text = " · ".join(f"{sev} {sum(f.get('severity') == sev for f in kept)}" for sev in ("P0", "P1", "P2", "P3"))
+    rules = sum(f.get("severity") == "rule" for f in kept)
+    return text + (f" · rule {rules}" if rules else "")
+
+
+def summary(verdict: str, result: dict, verify: str, judged: list[dict]) -> str:
+    """The table under the first line: the answers a reader wants before the report."""
+    live = next((ln.get("status") for ln in result.get("lanes", []) if ln.get("lane") == "live"), None) or "—"
+    met = f"{sum(c['status'] == 'met' for c in judged)}/{len(judged)} met" if judged else "—"
+    return ("| Verdict | Risk | Tests | Live run | Findings | Acceptance criteria |\n|---|---|---|---|---|---|\n"
+            f"| {verdict} | {result['tier']} | {verify} | {live} | {findings_count(result)} | {met} |")
+
+
+def criteria_table(judged: list[dict]) -> str:
+    rows = "\n".join(f"| #{c['issue']} | {cell(c['id'])} | {c['status']} | {cell(c.get('evidence') or '—')} |"
+                      for c in judged)
+    return f"### Acceptance criteria\n\n| Issue | Criterion | Status | Evidence |\n|---|---|---|---|\n{rows}"
+
+
 def render(verdict: str, sha: str, result: dict, report: str, session: str, verify: str,
-           since: str | None = None) -> str:
+           since: str | None = None, expected: list[tuple[int, str]] = ()) -> str:
     lanes = ",".join(f"{ln.get('lane')}@{(ln.get('sha') or '-')[:7]}:{ln.get('status')}"
                      for ln in result.get("lanes", []))
     scope = f" · since {since[:7]}" if since else ""
     head = f"**Review: {verdict}** · {sha[:7]} · {result['mode']}{scope} · verifier {session[:8]}"
-    # `verify:` lets the launcher print the Verify line for a repo that has no verify.json.
-    return (f"{head}\n\n{report.strip()}\n\n"
+    judged = check_criteria(result, expected)
+    # The first line stays as it was: automerge.HEAD_RE, push_gate and SINCE_RE read it. `verify:` lets the launcher
+    # print the Verify line for a repo that has no verify.json.
+    top = [summary(verdict, result, verify, judged)] + ([criteria_table(judged)] if judged else [])
+    return (f"{head}\n\n" + "\n\n".join(top) + f"\n\n{report.strip()}\n\n"
             f"<!-- verifier-session: {session}; verify: {verify}; tier: {result['tier']}; lanes: {lanes} -->\n")
 
 
@@ -225,6 +294,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mode", required=True, choices=sorted(REQUIRED),
                     help="the mode the launcher asked for; the result must match it")
     ap.add_argument("--since", help="the review lanes read only the diff after this reviewed ancestor")
+    ap.add_argument("--issues", type=pathlib.Path,
+                    help="the issues the branch closes (verify_fresh.sh writes it); each criterion must be judged")
     ap.add_argument("--log-dir", type=pathlib.Path, default=pathlib.Path.home() / ".claude" / "review-log")
     a = ap.parse_args(argv)
 
@@ -232,13 +303,14 @@ def main(argv: list[str] | None = None) -> int:
     sha = git(repo, "rev-parse", "HEAD")
     result = json.loads(a.result.read_text(encoding="utf-8"))
     gdir = gate_dir(repo)
+    expected = issue_criteria(a.issues.read_text(encoding="utf-8")) if a.issues else []
     try:
         # The launcher's mode, not the verifier's: a `full` request reported as `standard` would skip lanes.
         if result.get("mode") != a.mode:
             raise Refused(f"result.mode is {result.get('mode')!r} but the launcher asked for {a.mode!r}")
         has_verify_step = (repo / "scripts" / "verify.py").exists()
         verify = verify_verdict(gdir, sha) if has_verify_step else verify_from_lane(result, sha)
-        verdict = check(result, sha, verify)
+        verdict = check(result, sha, verify, expected)
         since = check_since(repo, gdir, sha, a.since, a.mode) if a.since else None
     except Refused as e:
         print(f"REFUSED: {e}", file=sys.stderr)
@@ -246,8 +318,8 @@ def main(argv: list[str] | None = None) -> int:
 
     gdir.mkdir(parents=True, exist_ok=True)
     out = gdir / f"{sha}.review.md"
-    out.write_text(render(verdict, sha, result, a.report.read_text(encoding="utf-8"), a.session, verify, since),
-                   encoding="utf-8")
+    out.write_text(render(verdict, sha, result, a.report.read_text(encoding="utf-8"), a.session, verify, since,
+                          expected), encoding="utf-8")
     a.log_dir.mkdir(parents=True, exist_ok=True)
     with (a.log_dir / f"{repo_name(repo)}.tsv").open("a", encoding="utf-8") as fh:
         fh.write("\n".join(log_rows(result, sha, verdict)) + "\n")

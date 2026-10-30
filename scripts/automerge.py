@@ -10,7 +10,8 @@ Run by /pr after CI: `python3 ~/projects/hhmode/scripts/automerge.py <PR number>
   - neither the verifier nor Codex rated the risk high (references/tiers.md); a re-review scoped `since` an
     earlier commit also counts that commit's tiers. The author's tier in the PR body is not read: it is free text,
     and the author is the one who wants the merge;
-  - GitHub says the PR is open into main and mergeable, and no check is failing or still running.
+  - GitHub says the PR is open into main and mergeable, and no check is failing or still running;
+  - the PR body fills the PR form and names every acceptance criterion of the issues it closes (scripts/forms.py).
 2. The merge check: a fresh headless Claude that wrote and verified nothing reads the PR, the issues it closes, the
    repo's CLAUDE.md, the records and the diff (skills/code-review/merge-check.md) and answers merge or not, with a
    reason. A repo rule that sends this kind of change to the user wins over the tiers above.
@@ -20,9 +21,10 @@ Run by /pr after CI: `python3 ~/projects/hhmode/scripts/automerge.py <PR number>
 
 Slack, only for what needs the user (user decision 2026-10-30): a high tier, a merge check that says no, a failed
 merge or issue close, or --report (the author gives up after three rounds). A reason the author fixes (CI, review,
-a conflict) is printed, not sent. Mode, from local/automerge (gitignored): `on` merges; anything else reports what
-it would have done, to Slack. Slack target: local/notify.json {"token_file": "...", "channel": "..."}; without it
-the message is printed. --dry-run prints the facts and does nothing else (no merge check).
+a conflict, the PR form) is printed, not sent. Mode, from local/automerge (gitignored): `on` merges; anything else
+reports what it would have done, to Slack. Slack target: local/notify.json {"token_file": "...", "channel": "..."};
+without it the message is printed. --dry-run prints the facts and does nothing else (no merge check); it still reads
+the issues the PR closes, which is read-only. Every message is plain English (user decision 2026-10-30).
 """
 from __future__ import annotations
 
@@ -37,16 +39,14 @@ import tempfile
 import time
 import urllib.request
 
+from forms import check_pr, tier_line
+
 HERE = pathlib.Path(__file__).resolve().parent.parent          # hhmode root
 ORDER = {"low": 0, "medium": 1, "high": 2}
 UNKNOWN = "unknown"                 # merged, but the merge commit could not be read back
 MAX_AUTO = "medium"                 # the highest tier that merges without the user (user decision 2026-10-30)
-TIER_KO = {"low": "낮음", "medium": "중간", "high": "높음"}
-VERDICT_KO = {"PASS": "통과", "ISSUES": "지적 있음", "BLOCKED": "못 돌림", "FAIL": "실패"}
+VERDICT_WORDS = {"PASS": "passed", "ISSUES": "found issues", "BLOCKED": "could not run", "FAIL": "failed"}
 HEAD_RE = re.compile(r"^\*\*Review: (\w+)\*\* · ([0-9a-f]{7,40}) · (\w+)(?: · since ([0-9a-f]{7,40}))?")
-
-
-CODEX_TIER = re.compile(r"(low|medium|high) — \S")   # the one form gpt-reviewer.md asks for; all 24 real records
 
 
 def gpt_tier(text: str) -> str | None:
@@ -54,8 +54,7 @@ def gpt_tier(text: str) -> str | None:
     and the merge stops. Reading tier words out of free text kept finding a lower tier than written ("medium - high",
     "medium – high", "**medium** - **high**": verifier on a93fe87, 8ddbe0d, c982ba2)."""
     m = re.search(r"^## Tier\s*\n+(.*)$", text or "", re.M | re.I)
-    t = CODEX_TIER.match(m.group(1)) if m else None
-    return t.group(1) if t else None
+    return tier_line(m.group(1)) if m else None
 
 
 def record_fields(text: str) -> dict:
@@ -84,39 +83,46 @@ def decide(pr: dict, records: list[dict]) -> tuple[bool, list[str], dict, dict]:
     """Pure. `records`: the head commit's first, then each `since` ancestor's, each {review, verify, tier, gpt}.
     Returns (merge, reasons it may not, tiers seen, state of each check), worded for the user."""
     reasons, head = [], records[0]
-    status = {"review": VERDICT_KO.get(head["review"], head["review"] or "기록 없음"),
-              "verify": VERDICT_KO.get(head["verify"], head["verify"] or "기록 없음"),
+    status = {"review": VERDICT_WORDS.get(head["review"], head["review"] or "no record"),
+              "verify": VERDICT_WORDS.get(head["verify"], head["verify"] or "no record"),
               "ci": checks_state(pr.get("statusCheckRollup")), "mergeable": pr.get("mergeable")}
     if pr.get("state") != "OPEN":
-        reasons.append(f"PR이 열려 있지 않음({pr.get('state')})")
+        reasons.append(f"the PR is not open ({pr.get('state')})")
     if pr.get("baseRefName") != "main":
         # The verifier reviews `origin/main...HEAD`; into another base the merge would carry changes nobody reviewed
         # (GPT lane, 2026-10-29).
-        reasons.append(f"병합 대상이 main 이 아님({pr.get('baseRefName')}) — 리뷰는 main 기준")
+        reasons.append(f"the PR merges into {pr.get('baseRefName')}, not main, and the review is against main")
     if head["review"] != "PASS":
-        reasons.append(f"리뷰 {status['review']}")
+        reasons.append(f"review: {status['review']}")
     if head["verify"] != "PASS":
-        reasons.append(f"검증 {status['verify']}")
+        reasons.append(f"tests: {status['verify']}")
     # The author's tier in the PR body is for the reader, not the decision: it is free text, and the author is the
     # one who wants the merge (pstack). The verifier and Codex rate the change independently, in fixed forms.
     tiers = {}
     for i, r in enumerate(records):
-        tag = "" if i == 0 else f"({r.get('sha', '')[:7]})"
-        tiers[f"Claude 검증{tag}"] = r["tier"]
-        tiers[f"Codex 리뷰{tag}"] = r["gpt"]
+        tag = "" if i == 0 else f" ({r.get('sha', '')[:7]})"
+        tiers[f"Claude verifier{tag}"] = r["tier"]
+        tiers[f"Codex review{tag}"] = r["gpt"]
         if r["tier"] is None:
-            reasons.append(f"Claude 검증{tag} 기록 없음" if r["review"] is None
-                           else f"Claude 검증{tag} 기록에 위험도가 없음(위험도 칸이 생기기 전 기록)")
+            reasons.append(f"no Claude verifier record{tag}" if r["review"] is None
+                           else f"the Claude verifier record{tag} has no risk tier (written before the field existed)")
         if r["gpt"] is None:
-            reasons.append(f"이 검증{tag}에서 Codex 리뷰가 돌지 않았거나 위험도를 못 읽음")
+            reasons.append(f"the Codex review did not run for this verification{tag}, or its risk tier "
+                           "could not be read")
     top = max((v for v in tiers.values() if v in ORDER), key=ORDER.get, default=None)
     if top and ORDER[top] > ORDER[MAX_AUTO]:
-        reasons.append(f"위험도 {TIER_KO[top]}")
+        reasons.append(f"risk tier {top}")
     if pr.get("mergeable") != "MERGEABLE":
-        reasons.append(f"병합 불가 상태({pr.get('mergeable')})")
+        reasons.append(f"the PR cannot be merged yet ({pr.get('mergeable')})")
     if status["ci"] in {"pending", "failing"}:
-        reasons.append({"failing": "CI 실패", "pending": "CI 진행 중"}[status["ci"]])
+        reasons.append({"failing": "CI is failing", "pending": "CI is still running"}[status["ci"]])
     return (not reasons, reasons, tiers, status)
+
+
+def form_problems(pr: dict, issues: list[dict]) -> list[str]:
+    """Where the PR body does not fill the PR form or leaves out a criterion of an issue it closes (scripts/forms.py),
+    worded as reasons for the author to fix. Not for the user: nothing here is a judgement call."""
+    return [f"PR body: {p}" for p in check_pr(pr.get("body") or "", {i["number"]: i.get("body") or "" for i in issues})]
 
 
 def gh(*args: str, cwd: pathlib.Path) -> str:
@@ -200,7 +206,7 @@ def merge_check(text: str) -> dict:
            "--tools", "", "--output-format", "json", "--json-schema", json.dumps(CHECK_SCHEMA)]
 
     def no(why: str) -> dict:
-        return {"merge": False, "reason": f"머지 확인 에이전트가 답하지 못함: {why.strip()[:300]}", "session": ""}
+        return {"merge": False, "reason": f"the merge check could not answer: {why.strip()[:300]}", "session": ""}
     try:
         run = subprocess.run(cmd, input=text, cwd=tempfile.mkdtemp(prefix="merge-check-"), capture_output=True,
                              text=True, timeout=900)
@@ -213,7 +219,7 @@ def merge_check(text: str) -> dict:
     ans = d.get("structured_output") or {}
     if isinstance(ans.get("merge"), bool) and str(ans.get("reason", "")).strip():
         return {"merge": ans["merge"], "reason": ans["reason"].strip(), "session": d.get("session_id", "")}
-    return no(str(d.get("result") or run.stderr or "답이 비어 있음"))
+    return no(str(d.get("result") or run.stderr or "its answer was empty"))
 
 
 def close_issues(issues: list[dict], pr: dict, merged: str, cwd) -> list[str]:
@@ -221,19 +227,19 @@ def close_issues(issues: list[dict], pr: dict, merged: str, cwd) -> list[str]:
     wait once before looking. Returns the ones that failed, for the user."""
     if issues:
         time.sleep(CLOSE_WAIT)
-    by = f"#{pr['number']} 머지" + (f"({merged[:7]})" if merged and merged != UNKNOWN else "")
+    by = f"the merge of #{pr['number']}" + (f" ({merged[:7]})" if merged and merged != UNKNOWN else "")
     failed = []
     for i in issues:
         try:
             if json.loads(gh("issue", "view", i["url"], "--json", "state", cwd=cwd))["state"] != "CLOSED":
-                gh("issue", "close", i["url"], "--reason", "completed", "--comment", f"{by}로 완료", cwd=cwd)
+                gh("issue", "close", i["url"], "--reason", "completed", "--comment", f"Done in {by}", cwd=cwd)
         except subprocess.CalledProcessError as e:
-            failed.append(f"이슈 #{i['number']} 닫기 실패: {(e.stderr or str(e)).strip()[:200]}")
+            failed.append(f"could not close issue #{i['number']}: {(e.stderr or str(e)).strip()[:200]}")
     return failed
 
 
-CI_KO = {"none": "없음", "ok": "통과", "pending": "진행 중", "failing": "실패"}
-MERGEABLE_KO = {"MERGEABLE": "충돌 없음", "CONFLICTING": "충돌 있음", "UNKNOWN": "충돌 여부 확인 중"}
+CI_WORDS = {"none": "none", "ok": "passing", "pending": "running", "failing": "failing"}
+MERGEABLE_WORDS = {"MERGEABLE": "no conflicts", "CONFLICTING": "conflicts", "UNKNOWN": "still checking"}
 
 
 def message(pr: dict, merge: bool, reasons: list[str], tiers: dict, status: dict, mode: str,
@@ -242,28 +248,27 @@ def message(pr: dict, merge: bool, reasons: list[str], tiers: dict, status: dict
     m = re.search(r"github\.com/[^/]+/([^/]+)/pull/", pr.get("url", ""))
     repo = m.group(1) if m else "?"
     if error:
-        head = "자동 병합 실패"
+        head = "Merge failed"
     elif merge and merged_sha:
-        head = "자동 병합"
+        head = "Merged"
     elif merge:
-        head = ("[dry-run]" if mode == "dry-run" else "[시험 운영]") + " 자동 병합 대상(실제 병합은 안 함)"
+        head = ("[dry-run]" if mode == "dry-run" else "[trial]") + " would merge, not merged"
     else:
-        head = "확인 필요"
+        head = "Needs you"
     lines = [f"*[{repo} #{pr['number']}] {head}* — {pr['title']}",
-             f"• 리뷰 {status['review']} · 테스트 {status['verify']} · CI {CI_KO.get(status['ci'], status['ci'])}"
-             f" · {MERGEABLE_KO.get(status['mergeable'], status['mergeable'])}",
-             "• 위험도(하나라도 '높음'이면 사용자 확인): "
-             + " · ".join(f"{k} {TIER_KO.get(v, '없음')}" for k, v in tiers.items())]
+             f"• Review {status['review']} · Tests {status['verify']} · CI {CI_WORDS.get(status['ci'], status['ci'])}"
+             f" · {MERGEABLE_WORDS.get(status['mergeable'], status['mergeable'])}",
+             "• Risk (any \"high\" needs you): " + " · ".join(f"{k} {v or 'none'}" for k, v in tiers.items())]
     if error:
-        lines.append(f"• 병합 명령이 실패함: {error}")
+        lines.append(f"• The merge command failed: {error}")
     elif merged_sha == UNKNOWN:
-        lines.append("• 병합은 됐지만 병합 커밋 번호를 못 읽음. 되돌리기는 PR 화면의 Revert")
+        lines.append("• Merged, but the merge commit could not be read back. To undo it, use Revert on the PR page")
     elif merged_sha:
-        lines.append(f"• 되돌리기: `git revert {merged_sha[:7]}` 또는 PR 화면의 Revert")
+        lines.append(f"• To undo: `git revert {merged_sha[:7]}` or Revert on the PR page")
     elif not merge:
-        lines.append("• 자동 병합 안 한 이유: " + ", ".join(reasons))
+        lines.append("• Why it was not merged: " + ", ".join(reasons))
     if check and check["merge"]:
-        lines.append(f"• 머지 확인(Claude): {check['reason']}")
+        lines.append(f"• Merge check (Claude): {check['reason']}")
     lines += [f"• {p}" for p in problems or []]
     return "\n".join(lines + [pr["url"]])
 
@@ -302,18 +307,29 @@ def main(argv: list[str] | None = None) -> int:
     mode_file = HERE / "local" / "automerge"
     mode = mode_file.read_text().strip() if mode_file.exists() else "shadow"
 
-    check, issues = None, []
+    # The issues the PR closes are read before deciding, also in --dry-run (read-only): the PR form is a fact like CI.
+    # One that cannot be read sends the PR to the user, with the reason, instead of passing unchecked.
+    try:
+        issues = closing_issues(pr, repo)
+        reasons += form_problems(pr, issues)
+    except subprocess.CalledProcessError as e:
+        issues = []
+        reasons.append(f"could not read the issues this PR closes: {(e.stderr or str(e)).strip()[:200]}")
+        for_user = True
+    merge = not reasons
+
+    check = None
     if merge and not a.dry_run:
         # Anything the check cannot read sends the PR to the user, with the reason, instead of crashing silently
         # after the facts passed (verifier on c470756).
         try:
-            issues = closing_issues(pr, repo)
             diff = gh("pr", "diff", str(a.pr), cwd=repo)
             rules = repo_rules(pr, repo)
-            unread = ("저장소 규칙(CLAUDE.md)을 못 읽음" if rules is None
-                      else f"변경이 커서({len(diff)}자) 머지 확인이 다 읽을 수 없음" if len(diff) > DIFF_CAP else None)
+            unread = ("could not read the repo's CLAUDE.md" if rules is None
+                      else f"the change is too big ({len(diff)} characters) for the merge check to read all of it"
+                      if len(diff) > DIFF_CAP else None)
         except subprocess.CalledProcessError as e:
-            unread = f"머지 확인에 쓸 PR 정보를 못 읽음: {(e.stderr or str(e)).strip()[:200]}"
+            unread = f"could not read what the merge check needs from GitHub: {(e.stderr or str(e)).strip()[:200]}"
         if unread:
             merge, for_user = False, True
             reasons.append(unread)
@@ -321,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
             check = merge_check(check_input(pr, issues, records, diff, rules))
             if not check["merge"]:
                 merge, for_user = False, True
-                reasons.append(f"머지 확인(Claude): {check['reason']}")
+                reasons.append(f"Merge check (Claude): {check['reason']}")
 
     merged_sha = error = None
     problems: list[str] = []
@@ -342,9 +358,9 @@ def main(argv: list[str] | None = None) -> int:
             problems = close_issues(issues, pr, merged_sha, repo)
             try:
                 gh("pr", "comment", str(a.pr), "--body",
-                   f"머지 확인(Claude, 세션 {check['session'][:8]}): 머지함. {check['reason']}", cwd=repo)
+                   f"Merge check (Claude, session {check['session'][:8]}): merged. {check['reason']}", cwd=repo)
             except subprocess.CalledProcessError as e:
-                problems.append(f"PR에 머지 확인 댓글을 못 남김: {(e.stderr or str(e)).strip()[:200]}")
+                problems.append(f"could not comment the merge check on the PR: {(e.stderr or str(e)).strip()[:200]}")
     text = message(pr, merge, reasons, tiers, status, "dry-run" if a.dry_run else mode, merged_sha, error,
                    check, problems)
     print(text)

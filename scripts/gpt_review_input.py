@@ -8,7 +8,10 @@ diff-only lane raised no P0/P1 in 88 rows.
 
 This text leaves the machine (OpenAI), so only files inside the repo go in: a symlink is listed, not followed.
 
-Usage: gpt_review_input.py <worktree> <base sha>   (prints markdown to stdout)
+With an issues file (verify_fresh.sh writes one for the issues the branch closes), its text comes first: the reviewer
+reads the change against the acceptance criteria it is meant to meet, not only against itself.
+
+Usage: gpt_review_input.py <worktree> <base sha> [issues file]   (prints markdown to stdout)
 """
 from __future__ import annotations
 
@@ -28,13 +31,14 @@ def git(repo: pathlib.Path, *args: str) -> str:
                           text=True, encoding="utf-8", errors="replace").stdout
 
 
-def build(repo: pathlib.Path, base: str) -> str:
+def build(repo: pathlib.Path, base: str, issues: str = "") -> str:
     diff = git(repo, "diff", f"{base}..HEAD")
     if len(diff) > DIFF_CAP:
         diff = diff[:DIFF_CAP] + f"\n(diff cut at {DIFF_CAP} characters)\n"
     # -z: names as they are; with core.quotePath a non-ASCII name came back escaped and unreadable
     names = [n for n in git(repo, "diff", "-z", "--name-only", "--diff-filter=d", f"{base}..HEAD").split("\0") if n]
-    out = [f"## Diff ({base[:7]}..HEAD)\n\n```diff\n{diff}```\n", "## Changed files after the change\n"]
+    out = [f"## Issue(s) this change closes\n\n{issues.strip()}\n"] if issues.strip() else []
+    out += [f"## Diff ({base[:7]}..HEAD)\n\n```diff\n{diff}```\n", "## Changed files after the change\n"]
     used = 0
     root = repo.resolve()
     for name in names:
@@ -58,4 +62,5 @@ def build(repo: pathlib.Path, base: str) -> str:
 
 
 if __name__ == "__main__":
-    print(build(pathlib.Path(sys.argv[1]), sys.argv[2]))
+    issues_text = pathlib.Path(sys.argv[3]).read_text(encoding="utf-8") if len(sys.argv) > 3 else ""
+    print(build(pathlib.Path(sys.argv[1]), sys.argv[2], issues_text))

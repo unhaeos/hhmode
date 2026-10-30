@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -14,12 +15,36 @@ SHA = "c" * 40
 OLD = "d" * 40
 GPT_LOW = "## Findings\nnone\n\n## Tier\nlow — docs/README.md: text only\n"
 GPT_MED = "## Findings\nnone\n\n## Tier\nmedium — scripts/x.py: behaviour change\n"
-STATUS = {"review": "통과", "verify": "통과", "ci": "ok", "mergeable": "MERGEABLE"}
+STATUS = {"review": "passed", "verify": "passed", "ci": "ok", "mergeable": "MERGEABLE"}
+# A PR body that fills the PR form (templates/pr.md) for ISSUE below.
+BODY = """## Why
+Weekly report named a project twice.
+Closes #7
+
+## What changed
+One header line per project.
+
+## Acceptance criteria
+- AC1: python3 -m unittest scripts/test_weekly.py → OK
+
+## Verification
+**Review: PASS** · ccccccc · standard · verifier 11111111
+
+## Risk
+low — commands/weekly-report.md: report wording only
+none found: grep shows no other caller
+
+## How to revert
+git revert ccccccc
+
+## Out of scope
+none
+"""
 
 
 def pr(**over):
     base = {"number": 12, "title": "docs: x", "url": "https://github.com/o/r/pull/12", "state": "OPEN",
-            "baseRefName": "main", "headRefOid": SHA, "body": "**Risk tier: low** (docs only)",
+            "baseRefName": "main", "headRefOid": SHA, "body": BODY,
             "mergeable": "MERGEABLE",
             "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS", "name": "ci"}]}
     base.update(over)
@@ -42,13 +67,13 @@ class Decide(unittest.TestCase):
         for body in ("**Risk tier: low**", "**Risk tier: medium** - **high**", "no tier field at all"):
             merge, reasons, tiers, _ = am.decide(pr(body=body), [rec()])
             self.assertTrue(merge, (body, reasons))
-            self.assertEqual(list(tiers), ["Claude 검증", "Codex 리뷰"])
+            self.assertEqual(list(tiers), ["Claude verifier", "Codex review"])
 
     # k-defense-kg #35: the author called a dependency pin low.
     def test_highest_tier_wins_over_the_authors(self):
         merge, reasons, *_ = am.decide(pr(), [rec(tier="high")])
         self.assertFalse(merge)
-        self.assertIn("위험도 높음", reasons)
+        self.assertIn("risk tier high", reasons)
         self.assertFalse(am.decide(pr(), [rec(gpt="high")])[0])
 
     # User, 2026-10-30: up to medium merges without the user; high still goes to them.
@@ -66,7 +91,7 @@ class Decide(unittest.TestCase):
     def test_old_record_without_a_tier_says_why(self):
         merge, reasons, *_ = am.decide(pr(), [rec(tier=None)])
         self.assertFalse(merge)
-        self.assertTrue(any("위험도 칸이 생기기 전" in r for r in reasons))
+        self.assertTrue(any("written before the field existed" in r for r in reasons))
 
     def test_review_or_verify_not_pass_goes_to_the_user(self):
         self.assertFalse(am.decide(pr(), [rec(review="ISSUES")])[0])
@@ -97,8 +122,8 @@ class Decide(unittest.TestCase):
     def test_tiers_from_the_since_ancestor_count(self):
         merge, reasons, tiers, _ = am.decide(pr(), [rec(since=OLD[:7]), rec(sha=OLD, gpt="high")])
         self.assertFalse(merge)
-        self.assertIn("위험도 높음", reasons)
-        self.assertIn(f"Codex 리뷰({OLD[:7]})", tiers)
+        self.assertIn("risk tier high", reasons)
+        self.assertIn(f"Codex review ({OLD[:7]})", tiers)
 
 
 class Parse(unittest.TestCase):
@@ -141,40 +166,49 @@ class Parse(unittest.TestCase):
 
 
 class Message(unittest.TestCase):
-    TIERS = {"Claude 검증": "low", "Codex 리뷰": None}
+    TIERS = {"Claude verifier": "low", "Codex review": None}
 
-    # User, 2026-10-29: the report had no repo name, said "작성자 low" and "GPT 없음", and nobody could read it.
+    # User, 2026-10-29: the report had no repo name and unexplained labels ("author low", "no GPT"), and nobody could
+    # read it. User, 2026-10-30: every harness artifact is plain English.
     def test_report_names_the_repo_and_speaks_plainly(self):
-        text = am.message(pr(), False, ["이 검증에서 Codex 리뷰가 돌지 않았거나 위험도를 못 읽음"], self.TIERS,
+        text = am.message(pr(), False, ["the Codex review did not run for this verification"], self.TIERS,
                           STATUS, "shadow", None)
-        self.assertIn("[r #12] 확인 필요", text)
-        self.assertIn("리뷰 통과 · 테스트 통과 · CI 통과 · 충돌 없음", text)
-        self.assertIn("Claude 검증 낮음 · Codex 리뷰 없음", text)
-        self.assertIn("하나라도 '높음'이면 사용자 확인", text)
-        for jargon in (" low", "GPT", "작성자"):
+        self.assertIn("[r #12] Needs you", text)
+        self.assertIn("Review passed · Tests passed · CI passing · no conflicts", text)
+        self.assertIn("Claude verifier low · Codex review none", text)
+        self.assertIn('any "high" needs you', text)
+        for jargon in ("GPT", "lane", "shadow"):
             self.assertNotIn(jargon, text)
+        self.assertIsNone(re.search(r"[가-힣]", text))
+
+    def test_ci_and_conflict_words(self):
+        for ci, mergeable, said in (("none", "MERGEABLE", "CI none · no conflicts"),
+                                    ("pending", "UNKNOWN", "CI running · still checking"),
+                                    ("failing", "CONFLICTING", "CI failing · conflicts")):
+            text = am.message(pr(), False, [], self.TIERS, {**STATUS, "ci": ci, "mergeable": mergeable}, "on", None)
+            self.assertIn(said, text)
 
     def test_shadow_says_it_did_not_merge(self):
         text = am.message(pr(), True, [], self.TIERS, STATUS, "shadow", None)
-        self.assertIn("[시험 운영]", text)
-        self.assertIn("실제 병합은 안 함", text)
+        self.assertIn("[trial] would merge, not merged", text)
 
     def test_on_gives_the_revert(self):
         text = am.message(pr(), True, [], self.TIERS, STATUS, "on", "e" * 40)
-        self.assertIn("자동 병합", text)
+        self.assertIn("*[r #12] Merged*", text)
         self.assertIn("git revert eeeeeee", text)
 
-    # GPT lane on e008f76 (P3): --dry-run with mode on printed "자동 병합" and "git revert ?".
+    # GPT lane on e008f76 (P3): --dry-run with mode on printed "Merged" and "git revert ?".
     def test_no_merge_commit_never_reads_as_merged(self):
         for mode in ("on", "dry-run"):
             text = am.message(pr(), True, [], self.TIERS, STATUS, mode, None)
-            self.assertIn("실제 병합은 안 함", text)
+            self.assertIn("would merge, not merged", text)
+            self.assertNotIn("*Merged*", text)
             self.assertNotIn("git revert", text)
 
     # Verifier note on 08df90d (P2): a merge refused by GitHub ended the run with no report.
     def test_failed_merge_is_reported(self):
         text = am.message(pr(), True, [], self.TIERS, STATUS, "on", None, error="Pull request is in draft")
-        self.assertIn("자동 병합 실패", text)
+        self.assertIn("Merge failed", text)
         self.assertIn("Pull request is in draft", text)
 
     # Verifier note on f07e72f (P2): the merge went through, the lookup after it failed, and it read as a failure.
@@ -182,19 +216,20 @@ class Message(unittest.TestCase):
         rc, text, calls, _ = run_main(lookup_fails=True)
         self.assertEqual(rc, 0)
         self.assertTrue(any(c[:2] == ("pr", "merge") for c in calls))
-        self.assertIn("자동 병합*", text)
-        self.assertIn("병합은 됐지만 병합 커밋 번호를 못 읽음", text)
-        self.assertNotIn("실패", text)
+        self.assertIn("Merged*", text)
+        self.assertIn("Merged, but the merge commit could not be read back", text)
+        self.assertNotIn("Merge failed", text)
         self.assertIn("automerge: MERGED", text)
 
     def test_to_user_names_the_reasons(self):
-        text = am.message(pr(), False, ["위험도 중간", "CI 실패"], self.TIERS, STATUS, "shadow", None)
-        self.assertIn("확인 필요", text)
-        self.assertIn("자동 병합 안 한 이유: 위험도 중간, CI 실패", text)
+        text = am.message(pr(), False, ["risk tier medium", "CI is failing"], self.TIERS, STATUS, "shadow", None)
+        self.assertIn("Needs you", text)
+        self.assertIn("Why it was not merged: risk tier medium, CI is failing", text)
 
 
-ISSUE = {"number": 7, "url": "https://github.com/o/r/issues/7", "state": "OPEN", "title": "주간 보고 머리글",
-         "body": "프로젝트 이름을 한 번만 쓰기"}
+ISSUE = {"number": 7, "url": "https://github.com/o/r/issues/7", "state": "OPEN", "title": "One header per project",
+         "body": "## Background\nThe report names a project twice.\n\n## Acceptance criteria\n"
+                 "- [ ] AC1: each project is named once\n\n## Out of scope\nnone\n\n## Risk\nlow — docs\n"}
 
 
 def run_main(pr_over=None, records=None, check=None, issue_state="OPEN", lookup_fails=False, args=(),
@@ -234,7 +269,8 @@ def run_main(pr_over=None, records=None, check=None, issue_state="OPEN", lookup_
 
     def fake_check(text):
         inputs.append(text)
-        return check or {"merge": True, "reason": "주간 보고 머리글을 한 번만 쓰게 고침.", "session": "abcd1234-x"}
+        return check or {"merge": True, "reason": "Names each project once in the weekly report.",
+                         "session": "abcd1234-x"}
     saved = (am.gh, am.load_records, am.HERE, am.merge_check, am.CLOSE_WAIT)
     am.gh, am.load_records, am.HERE, am.merge_check, am.CLOSE_WAIT = (
         fake_gh, (lambda gate, sha: records or [rec()]), here, fake_check, 0)
@@ -255,9 +291,9 @@ class Flow(unittest.TestCase):
         rc, text, calls, inputs = run_main()
         self.assertIn(("pr", "merge", "12", "--squash", "--match-head-commit", SHA), calls)
         self.assertTrue(any(c[:3] == ("issue", "close", ISSUE["url"]) and "completed" in c for c in calls))
-        self.assertTrue(any(c[:2] == ("pr", "comment") and "머지 확인(Claude, 세션 abcd1234)" in c[-1]
+        self.assertTrue(any(c[:2] == ("pr", "comment") and "Merge check (Claude, session abcd1234): merged." in c[-1]
                             for c in calls))
-        self.assertIn("프로젝트 이름을 한 번만 쓰기", inputs[0])         # the check reads the issue it closes
+        self.assertIn("each project is named once", inputs[0])         # the check reads the issue it closes
         self.assertIn("+line", inputs[0])
         self.assertNotIn("[slack]", text)
         self.assertIn("automerge: MERGED", text)
@@ -267,9 +303,9 @@ class Flow(unittest.TestCase):
         self.assertFalse(any(c[:2] == ("issue", "close") for c in calls))
 
     def test_merge_check_no_goes_to_slack_unmerged(self):
-        rc, text, calls, _ = run_main(check={"merge": False, "reason": "scripts/x.py:3 가 데이터를 지움", "session": ""})
+        rc, text, calls, _ = run_main(check={"merge": False, "reason": "scripts/x.py:3 deletes data", "session": ""})
         self.assertFalse(any(c[:2] == ("pr", "merge") for c in calls))
-        self.assertIn("머지 확인(Claude): scripts/x.py:3 가 데이터를 지움", text)
+        self.assertIn("Merge check (Claude): scripts/x.py:3 deletes data", text)
         self.assertIn("[slack]", text)
 
     # A fact that fails stops everything: no merge check, and no Slack — the author fixes it (/pr step 9).
@@ -278,16 +314,16 @@ class Flow(unittest.TestCase):
         rc, text, calls, inputs = run_main(pr_over={"statusCheckRollup": failing})
         self.assertEqual(inputs, [])
         self.assertFalse(any(c[:2] == ("pr", "merge") for c in calls))
-        self.assertIn("CI 실패", text)
+        self.assertIn("CI is failing", text)
         self.assertNotIn("[slack]", text)
         _, text, _, _ = run_main(pr_over={"statusCheckRollup": failing}, args=("--report",))
         self.assertIn("[slack]", text)
 
     # Verifier and GPT lane on c470756: what the check cannot read must not pass, and must not crash silently.
     def test_unreadable_input_goes_to_the_user_without_the_check(self):
-        for kw, said in ((dict(rules=None), "저장소 규칙(CLAUDE.md)을 못 읽음"),
-                         (dict(diff="+" * (am.DIFF_CAP + 1)), "머지 확인이 다 읽을 수 없음"),
-                         (dict(graphql_fails=True), "PR 정보를 못 읽음")):
+        for kw, said in ((dict(rules=None), "could not read the repo's CLAUDE.md"),
+                         (dict(diff="+" * (am.DIFF_CAP + 1)), "for the merge check to read all of it"),
+                         (dict(graphql_fails=True), "could not read the issues this PR closes")):
             rc, text, calls, inputs = run_main(**kw)
             self.assertEqual(inputs, [], said)
             self.assertFalse(any(c[:2] == ("pr", "merge") for c in calls), said)
@@ -301,22 +337,60 @@ class Flow(unittest.TestCase):
     def test_issue_comment_without_a_merge_commit_says_no_unknown(self):
         _, _, calls, _ = run_main(lookup_fails=True)
         close = [c for c in calls if c[:2] == ("issue", "close")][0]
-        self.assertEqual(close[-1], "#12 머지로 완료")
+        self.assertEqual(close[-1], "Done in the merge of #12")
 
     def test_a_high_tier_skips_the_check_and_goes_to_slack(self):
         rc, text, calls, inputs = run_main(records=[rec(tier="high")])
         self.assertEqual(inputs, [])
-        self.assertIn("위험도 높음", text)
+        self.assertIn("risk tier high", text)
         self.assertIn("[slack]", text)
+
+    def test_the_issue_comment_names_the_merge_commit(self):
+        _, _, calls, _ = run_main()
+        close = [c for c in calls if c[:2] == ("issue", "close")][0]
+        self.assertEqual(close[-1], "Done in the merge of #12 (eeeeeee)")
+
+    # User, 2026-10-30: the issue's criteria must reach the PR. A body that skips the form is the author's to fix:
+    # printed, not sent, and the merge check does not start.
+    def test_a_pr_body_that_skips_the_forms_waits_for_the_author(self):
+        for body, said in (("**Risk tier: low** (docs only)", "PR body: missing section: ## Why"),
+                           (BODY.replace("- AC1: python3 -m unittest scripts/test_weekly.py → OK",
+                                         "- AC9: something else"),
+                            "PR body: Acceptance criteria does not name AC1 of issue #7")):
+            rc, text, calls, inputs = run_main(pr_over={"body": body})
+            self.assertEqual(inputs, [], said)
+            self.assertFalse(any(c[:2] == ("pr", "merge") for c in calls), said)
+            self.assertIn(said, text)
+            self.assertIn("Needs you", text)
+            self.assertIn("automerge: TO USER", text)
+            self.assertNotIn("[slack]", text)
+        _, text, _, _ = run_main(pr_over={"body": "**Risk tier: low**"}, args=("--report",))
+        self.assertIn("[slack]", text)
+
+    # The issues are read before deciding, also on a dry run: reading is all they cost.
+    def test_dry_run_reads_the_issues_and_checks_the_form(self):
+        rc, text, calls, inputs = run_main(args=("--dry-run",))
+        self.assertTrue(any(c[:2] == ("api", "graphql") for c in calls))
+        self.assertIn("[dry-run] would merge, not merged", text)
+        self.assertEqual(inputs, [])
+        _, text, _, _ = run_main(pr_over={"body": BODY.replace("Closes #7\n", "").replace("AC1", "AC9")},
+                                 args=("--dry-run",))
+        self.assertIn("Acceptance criteria does not name AC1 of issue #7", text)
+
+    def test_form_problems_are_reasons_for_the_author(self):
+        self.assertEqual(am.form_problems(pr(), [ISSUE]), [])
+        got = am.form_problems(pr(body="## Why\nx\nCloses #8"), [ISSUE])
+        self.assertIn("PR body: issue #8 was not read", got)
+        self.assertIn("PR body: missing section: ## Acceptance criteria", got)
 
 
 class CheckInput(unittest.TestCase):
     # Merge check on k-defense-kg #51: it held a medium PR back only because the record happened to quote the
     # repo's rule; the rule is now always in its input.
     def test_input_carries_the_pr_issue_rules_records_and_diff(self):
-        text = am.check_input(pr(body="본문"), [ISSUE], [rec(text="REC", gpt_text="GPT")], "+x\n",
+        text = am.check_input(pr(body="THE BODY"), [ISSUE], [rec(text="REC", gpt_text="GPT")], "+x\n",
                               "Medium | user confirmation")
-        for part in ("본문", "프로젝트 이름을 한 번만 쓰기", "Medium | user confirmation", "REC", "GPT", "+x"):
+        for part in ("THE BODY", "each project is named once", "Medium | user confirmation", "REC", "GPT", "+x"):
             self.assertIn(part, text)
         self.assertNotIn("CLAUDE.md", am.check_input(pr(), [], [rec(text="", gpt_text="")], "", ""))
 
@@ -371,8 +445,9 @@ class MergeCheck(unittest.TestCase):
         self.assertIn("credit balance too low", got["reason"])
 
     def test_structured_answer(self):
-        got = self.run_with("""echo '{"structured_output": {"merge": true, "reason": "문서만 바꿈"}, "session_id": "s1"}'\n""")
-        self.assertEqual(got, {"merge": True, "reason": "문서만 바꿈", "session": "s1"})
+        got = self.run_with(
+            """echo '{"structured_output": {"merge": true, "reason": "Docs only."}, "session_id": "s1"}'\n""")
+        self.assertEqual(got, {"merge": True, "reason": "Docs only.", "session": "s1"})
 
     # No answer is a no: the PR goes to the user with what the check said.
     def test_no_answer_is_a_no(self):
@@ -380,7 +455,7 @@ class MergeCheck(unittest.TestCase):
                      "exit 1\n"):
             got = self.run_with(body)
             self.assertFalse(got["merge"])
-            self.assertIn("머지 확인 에이전트가 답하지 못함", got["reason"])
+            self.assertIn("the merge check could not answer", got["reason"])
 
 
 if __name__ == "__main__":
