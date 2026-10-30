@@ -26,6 +26,7 @@ Turn the current branch into a reviewable pull request. One task, one branch, on
 
    ## Why
    <1 to 3 lines: the reason or the issue>
+   Closes #<issue number>   ← only when the task came from an issue; one line per issue. GitHub closes it on merge, and automerge.py closes it if GitHub did not.
 
    ## Verification
    <the Review line and the Verify block exactly as verify_fresh.sh printed them — never typed by hand>
@@ -48,12 +49,13 @@ Turn the current branch into a reviewable pull request. One task, one branch, on
 
 7. **Post the verifier's record on the PR.** `gh pr comment <number> --body-file <git common dir>/gate/<sha>.review.md` — the file the verifier wrote, unedited. The comment names the commit it reviewed; a later push makes it stale, and the next `/pr` run posts a new one.
    **Updating an open PR** (new commits after review fixes): re-run step 4 for the new head, then `gh pr edit <number> --body-file <tmp>` with the new `Review:`/`Verify:` lines **before** pushing, then push. A gated repo's CI ("리뷰·검증 관문") reads the body and is red while the lines name an older commit.
-8. **Auto-merge check.** Once CI has finished (`gh pr checks <number> --watch`), run `python3 ~/projects/hhmode/scripts/automerge.py <number>` from this worktree. It merges the reviewed commit only when the verifier's review and verify are PASS, the GPT lane ran, the highest of the author's, the verifier's and the GPT lane's tier is low or medium (`skills/code-review/references/tiers.md`; high goes to the user), the PR is mergeable and CI is green; otherwise it tells the user why. Either way it reports to Slack. It merges only while `~/projects/hhmode/local/automerge` says `on`; otherwise it reports what it would have done.
+8. **Merge check.** Once CI has finished (`gh pr checks <number> --watch`), run `python3 ~/projects/hhmode/scripts/automerge.py <number>` from this worktree. It first checks the facts for the reviewed commit: the verifier's review and verify are PASS, the Codex review ran, nobody rated the tier high (`skills/code-review/references/tiers.md`), the PR is mergeable and CI is green. Only then does it start the merge check, a fresh Claude that reads the PR, its issue, the repo's CLAUDE.md, the records and the diff (`skills/code-review/merge-check.md`). On its yes the script merges that commit, closes the issue and comments the reason on the PR. Slack hears only what needs the user: a high tier, the merge check's no, a failed merge. A fact you can fix (CI, review, conflict) is printed for you, not sent. It merges only while `~/projects/hhmode/local/automerge` says `on`.
 9. **Stay with the PR until it merges or goes to the user.** You own this PR from build to merge (pstack `autopilot-full`: one owner carries each PR). When automerge.py did not merge, act on its reasons here:
    - CI failing, or the PR conflicts with main: fix it as a new commit (for a conflict, `git merge origin/main`; never rebase a pushed branch), run step 4 on the new head, push, post the new record (step 7) and run step 8 again.
    - Review ISSUES: fix the finding the same way, or leave it and say why in the PR.
-   - Risk tier high, a lane BLOCKED for a reason you cannot fix, or three rounds without a merge: stop. The PR goes to the user (or `/land`); say why in the report.
-10. **Report.** Print the PR URL, the verdict line, the automerge line, and anything the reviewer must look at first.
+   - Risk tier high or the merge check said no: the script already told the user on Slack. Stop.
+   - A lane BLOCKED for a reason you cannot fix, or three rounds without a merge: run step 8 once more with `--report`, which sends the reasons to Slack, and stop. The PR goes to the user (or `/land`).
+10. **Report.** Print the PR URL, the verdict line, the automerge line (with the merge check's reason), and anything the user must look at first.
 
 ## Rules
 

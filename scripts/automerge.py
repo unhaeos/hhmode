@@ -1,26 +1,33 @@
 #!/usr/bin/env python3
-"""Merge a PR without the user only when every independent check says it is safe, and report to Slack either way.
+"""Merge a PR without the user when the facts hold and a fresh Claude, the merge check, finds nothing for the user
+to look at. Report to Slack only the PRs that need the user.
 
-Run by /pr after the verifier: `python3 ~/projects/hhmode/scripts/automerge.py <PR number>` from the task worktree.
+Run by /pr after CI: `python3 ~/projects/hhmode/scripts/automerge.py <PR number>` from the task worktree.
 
-A PR merges on its own only when all of these hold for its head commit:
+1. Facts, checked here for the PR's head commit. Any that fails stops the merge, and the merge check never starts:
   - the verifier's record says Review PASS and verify PASS (gate/<sha>.review.md, written by record_review.py);
-  - the GPT lane's review exists (gate/<sha>.gpt.md, copied by verify_fresh.sh);
-  - the highest of the author's tier (PR body), the verifier's and the GPT lane's is low or medium
-    (references/tiers.md; high goes to the user — user decision 2026-10-30, it was low only);
-    a re-review scoped `since` an earlier commit also counts the tiers recorded for that commit;
-  - GitHub says the PR is open and mergeable, and no check is failing or still running.
-Anything else goes to the user, with the reasons. The merge pins the reviewed commit (--match-head-commit), so a
-push after the review cannot ride along (pstack: only a clean verdict on the patch that merges authorizes it).
+  - the Codex review exists (gate/<sha>.gpt.md, copied by verify_fresh.sh);
+  - nobody rated the risk high: not the author (PR body), the verifier, nor Codex (references/tiers.md); a
+    re-review scoped `since` an earlier commit also counts that commit's tiers;
+  - GitHub says the PR is open into main and mergeable, and no check is failing or still running.
+2. The merge check: a fresh headless Claude that wrote and verified nothing reads the PR, the issues it closes, the
+   repo's CLAUDE.md, the records and the diff (skills/code-review/merge-check.md) and answers merge or not, with a
+   reason. A repo rule that sends this kind of change to the user wins over the tiers above.
+3. The merge pins the reviewed commit (--match-head-commit), so a push after the review cannot ride along (pstack:
+   only a clean verdict on the patch that merges authorizes it). Then each issue the PR closes is closed if GitHub
+   left it open, and the merge check's reason goes on the PR as a comment.
 
-Mode, from local/automerge (gitignored): `on` merges; anything else, or no file, only reports what it would have
-done (the trial week). Slack: local/notify.json {"token_file": "...", "channel": "..."}; without it the message
-is printed. --dry-run prints and does nothing else.
+Slack, only for what needs the user (user decision 2026-10-30): a high tier, a merge check that says no, a failed
+merge or issue close, or --report (the author gives up after three rounds). A reason the author fixes (CI, review,
+a conflict) is printed, not sent. Mode, from local/automerge (gitignored): `on` merges; anything else reports what
+it would have done, to Slack. Slack target: local/notify.json {"token_file": "...", "channel": "..."}; without it
+the message is printed. --dry-run prints the facts and does nothing else (no merge check).
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -132,11 +139,83 @@ def load_records(gate: pathlib.Path, sha: str) -> list[dict]:
         gpt = next(iter(sorted(gate.glob(f"{sha}*.gpt.md"))), None)
         f = record_fields(rec.read_text(encoding="utf-8")) if rec else {"review": None, "verify": None,
                                                                        "tier": None, "since": None}
-        f["gpt"] = gpt_tier(gpt.read_text(encoding="utf-8")) if gpt else None
+        f["text"] = rec.read_text(encoding="utf-8") if rec else ""
+        f["gpt_text"] = gpt.read_text(encoding="utf-8") if gpt else ""
+        f["gpt"] = gpt_tier(f["gpt_text"]) if gpt else None
         f["sha"] = rec.name.split(".")[0] if rec else sha
         out.append(f)
         sha = f["since"]
     return out
+
+
+ISSUES_QUERY = ("query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n)"
+                "{closingIssuesReferences(first:20){nodes{number url state title body}}}}}")
+
+
+def closing_issues(pr: dict, cwd) -> list[dict]:
+    """The issues this PR closes on merge (`Closes #n` in its body, or linked by hand), from GitHub's GraphQL API."""
+    o, r = re.search(r"github\.com/([^/]+)/([^/]+)/pull/", pr["url"]).groups()
+    out = gh("api", "graphql", "-f", f"query={ISSUES_QUERY}", "-F", f"o={o}", "-F", f"r={r}",
+             "-F", f"n={pr['number']}", cwd=cwd)
+    return json.loads(out)["data"]["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"]
+
+
+DIFF_CAP = 300_000      # characters of diff for the merge check; the verifier and Codex already read all of it
+CHECK_SCHEMA = {"type": "object", "properties": {"merge": {"type": "boolean"}, "reason": {"type": "string"}},
+                "required": ["merge", "reason"], "additionalProperties": False}
+
+
+def repo_rules(repo, base: str) -> str:
+    """The repo's CLAUDE.md on the PR's base branch, or "" when it has none. Its merge rules outrank this script's
+    defaults: k-defense-kg's section 4 sends medium to the user (merge check on k-defense-kg #51, 2026-10-30)."""
+    run = subprocess.run(["git", "-C", str(repo), "show", f"origin/{base}:CLAUDE.md"], capture_output=True, text=True)
+    return run.stdout if run.returncode == 0 else ""
+
+
+def check_input(pr: dict, issues: list[dict], records: list[dict], diff: str, rules: str = "") -> str:
+    parts = [f"# PR #{pr['number']}: {pr['title']}\n\n{pr.get('body') or '(no body)'}"]
+    if rules:
+        parts.append(f"# The repo's CLAUDE.md (main)\n\n{rules}")
+    parts += [f"# Issue #{i['number']}, which this PR closes: {i['title']}\n\n{i.get('body') or '(no body)'}"
+              for i in issues]
+    for r in records:
+        parts.append(f"# Verifier record, {r['sha'][:7]}\n\n{r.get('text') or '(none)'}")
+        parts.append(f"# Codex review, {r['sha'][:7]}\n\n{r.get('gpt_text') or '(none)'}")
+    cut = f"\n\n(diff cut at {DIFF_CAP} of {len(diff)} characters)" if len(diff) > DIFF_CAP else ""
+    parts.append(f"# Diff\n\n```diff\n{diff[:DIFF_CAP]}\n```{cut}")
+    return "\n\n".join(parts)
+
+
+def merge_check(text: str, cwd) -> dict:
+    """{"merge", "reason", "session"} from a fresh headless Claude with no tools. One that cannot answer is a no:
+    the PR goes to the user with what it said."""
+    cmd = ["claude", "-p", "Decide whether this pull request merges without the user. The input is on stdin.",
+           "--model", os.environ.get("MERGE_CHECK_MODEL", "claude-opus-5-5"),
+           "--append-system-prompt-file", str(HERE / "skills" / "code-review" / "merge-check.md"),
+           "--tools", "", "--output-format", "json", "--json-schema", json.dumps(CHECK_SCHEMA)]
+    try:
+        run = subprocess.run(cmd, input=text, cwd=cwd, capture_output=True, text=True, timeout=900)
+        d = json.loads(run.stdout)
+        ans = d.get("structured_output") or {}
+        if isinstance(ans.get("merge"), bool) and str(ans.get("reason", "")).strip():
+            return {"merge": ans["merge"], "reason": ans["reason"].strip(), "session": d.get("session_id", "")}
+        why = str(d.get("result") or run.stderr or "답이 비어 있음")
+    except (subprocess.SubprocessError, OSError, ValueError) as e:
+        why = str(e)
+    return {"merge": False, "reason": f"머지 확인 에이전트가 답하지 못함: {why.strip()[:300]}", "session": ""}
+
+
+def close_issues(issues: list[dict], pr: dict, merged: str, cwd) -> list[str]:
+    """Close each issue the PR closes that GitHub left open. Returns the ones that failed, for the user."""
+    failed = []
+    for i in issues:
+        try:
+            if json.loads(gh("issue", "view", i["url"], "--json", "state", cwd=cwd))["state"] != "CLOSED":
+                gh("issue", "close", i["url"], "--reason", "completed",
+                   "--comment", f"#{pr['number']} 머지({merged[:7]})로 완료", cwd=cwd)
+        except subprocess.CalledProcessError as e:
+            failed.append(f"이슈 #{i['number']} 닫기 실패: {(e.stderr or str(e)).strip()[:200]}")
+    return failed
 
 
 CI_KO = {"none": "없음", "ok": "통과", "pending": "진행 중", "failing": "실패"}
@@ -144,7 +223,8 @@ MERGEABLE_KO = {"MERGEABLE": "충돌 없음", "CONFLICTING": "충돌 있음", "U
 
 
 def message(pr: dict, merge: bool, reasons: list[str], tiers: dict, status: dict, mode: str,
-            merged_sha: str | None, error: str | None = None) -> str:
+            merged_sha: str | None, error: str | None = None, check: dict | None = None,
+            problems: list[str] | None = None) -> str:
     m = re.search(r"github\.com/[^/]+/([^/]+)/pull/", pr.get("url", ""))
     repo = m.group(1) if m else "?"
     if error:
@@ -158,7 +238,7 @@ def message(pr: dict, merge: bool, reasons: list[str], tiers: dict, status: dict
     lines = [f"*[{repo} #{pr['number']}] {head}* — {pr['title']}",
              f"• 리뷰 {status['review']} · 테스트 {status['verify']} · CI {CI_KO.get(status['ci'], status['ci'])}"
              f" · {MERGEABLE_KO.get(status['mergeable'], status['mergeable'])}",
-             f"• 위험도(셋 다 '{TIER_KO[MAX_AUTO]}' 이하여야 자동 병합): "
+             "• 위험도(하나라도 '높음'이면 사용자 확인): "
              + " · ".join(f"{k} {TIER_KO.get(v, '없음')}" for k, v in tiers.items())]
     if error:
         lines.append(f"• 병합 명령이 실패함: {error}")
@@ -168,6 +248,9 @@ def message(pr: dict, merge: bool, reasons: list[str], tiers: dict, status: dict
         lines.append(f"• 되돌리기: `git revert {merged_sha[:7]}` 또는 PR 화면의 Revert")
     elif not merge:
         lines.append("• 자동 병합 안 한 이유: " + ", ".join(reasons))
+    if check and check["merge"]:
+        lines.append(f"• 머지 확인(Claude): {check['reason']}")
+    lines += [f"• {p}" for p in problems or []]
     return "\n".join(lines + [pr["url"]])
 
 
@@ -190,6 +273,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("pr", type=int)
     ap.add_argument("--repo", type=pathlib.Path, default=pathlib.Path.cwd())
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--report", action="store_true",
+                    help="send to Slack even a reason the author could fix (/pr step 9, after three rounds)")
     a = ap.parse_args(argv)
 
     repo = a.repo.resolve()
@@ -199,10 +284,21 @@ def main(argv: list[str] | None = None) -> int:
                             check=True, capture_output=True, text=True).stdout.strip()
     records = load_records(pathlib.Path(common) / "gate", pr["headRefOid"])
     merge, reasons, tiers, status = decide(pr, records)
+    for_user = "high" in tiers.values()     # the user's call; every other reason is the author's to fix
     mode_file = HERE / "local" / "automerge"
     mode = mode_file.read_text().strip() if mode_file.exists() else "shadow"
 
+    check, issues = None, []
+    if merge and not a.dry_run:
+        issues = closing_issues(pr, repo)
+        diff = gh("pr", "diff", str(a.pr), cwd=repo)
+        check = merge_check(check_input(pr, issues, records, diff, repo_rules(repo, pr["baseRefName"])), repo)
+        if not check["merge"]:
+            merge, for_user = False, True
+            reasons.append(f"머지 확인(Claude): {check['reason']}")
+
     merged_sha = error = None
+    problems: list[str] = []
     if merge and mode == "on" and not a.dry_run:
         # Branch protection, a draft, or a push after the review make the merge fail: report it, do not stop silently
         # (verifier note on 08df90d).
@@ -217,9 +313,16 @@ def main(argv: list[str] | None = None) -> int:
                                            cwd=repo))["mergeCommit"]["oid"]
             except (subprocess.CalledProcessError, KeyError, TypeError, ValueError):
                 merged_sha = UNKNOWN
-    text = message(pr, merge, reasons, tiers, status, "dry-run" if a.dry_run else mode, merged_sha, error)
+            problems = close_issues(issues, pr, merged_sha, repo)
+            try:
+                gh("pr", "comment", str(a.pr), "--body",
+                   f"머지 확인(Claude, 세션 {check['session'][:8]}): 머지함. {check['reason']}", cwd=repo)
+            except subprocess.CalledProcessError as e:
+                problems.append(f"PR에 머지 확인 댓글을 못 남김: {(e.stderr or str(e)).strip()[:200]}")
+    text = message(pr, merge, reasons, tiers, status, "dry-run" if a.dry_run else mode, merged_sha, error,
+                   check, problems)
     print(text)
-    if not a.dry_run:
+    if not a.dry_run and (for_user or a.report or error or problems or mode != "on"):
         try:
             print(f"[slack] {post_slack(text)}")
         except Exception as e:                          # after a merge, a Slack failure must not hide it

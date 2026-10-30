@@ -7,5 +7,6 @@ Risk tier. The change sets it, not the author. When unsure, take the higher one.
 - **high**: DB schema, data loads, API contracts, ground-truth or eval data, secrets, and anything that changes
   what a review, verify or merge gate requires or allows (hhmode #9 loosened the review gate).
 
-A low or medium tier lets the change merge without the user (scripts/automerge.py; user decision 2026-10-30) and
-high goes to the user, so a change that fits two tiers gets the higher one.
+Below high, the change may merge without the user after the merge check (scripts/automerge.py; user decision
+2026-10-30), unless the repo's CLAUDE.md says otherwise. High goes to the user, so a change that fits two tiers gets
+the higher one.
