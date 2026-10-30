@@ -45,17 +45,18 @@ VERDICT_KO = {"PASS": "통과", "ISSUES": "지적 있음", "BLOCKED": "못 돌�
 HEAD_RE = re.compile(r"^\*\*Review: (\w+)\*\* · ([0-9a-f]{7,40}) · (\w+)(?: · since ([0-9a-f]{7,40}))?")
 
 
-TIER_REASON = re.compile(r"[—–:(.,;]")   # where a tier field's reason starts; a plain hyphen is not one
+VALUE_END = re.compile(r"\*\*| \(| — ")   # a tier field's value ends at a closing **, " (" or " — "
 
 
 def first_tier(text: str) -> str | None:
-    """The tier a field names before its reason starts, when exactly one tier word stands there. Counting tier words
-    over the whole line read Codex's "high — scripts/automerge.py: ... from low to low or medium risk" (b0f58f9,
-    PR #13) as no tier. Taking the first word read "medium - high — x" as medium, lower than written (verifier on
-    a93fe87). An unfilled `low | medium | high` or a `low-to-medium` reads as none."""
-    head = TIER_REASON.split(text or "", maxsplit=1)[0]
-    words = re.findall(r"\b(low|medium|high)\b", head.lower())
-    return words[0] if len(set(words)) == 1 and len(words) == 1 else None
+    """The tier a field holds: its value, up to a closing `**`, ` (` or ` — `, must be one tier word and nothing
+    else (bold, backticks and a trailing full stop aside). Anything else reads as none, so the merge stops and says
+    why. Reading tier words out of free text kept finding a lower tier than written: "medium - high" (verifier on
+    a93fe87), "medium – high" (on 8ddbe0d); counting words over the reason read Codex's "high — ... from low to
+    medium" as none (b0f58f9)."""
+    value = VALUE_END.split((text or "").strip().lstrip("*"), maxsplit=1)[0]
+    value = value.strip().strip("`*").rstrip(".,;:").strip("`* ").lower()
+    return value if value in ORDER else None
 
 
 def author_tier(body: str) -> str | None:
@@ -121,7 +122,7 @@ def decide(pr: dict, records: list[dict]) -> tuple[bool, list[str], dict, dict]:
         reasons.append(f"검증 {status['verify']}")
     tiers = {"PR 쓴 에이전트": author_tier(pr.get("body", ""))}
     if tiers["PR 쓴 에이전트"] is None:
-        reasons.append("PR 본문의 위험도 칸이 없거나 비어 있음")
+        reasons.append("PR 본문의 위험도 칸이 없거나 형식이 다름(`**Risk tier: low|medium|high**`)")
     for i, r in enumerate(records):
         tag = "" if i == 0 else f"({r.get('sha', '')[:7]})"
         tiers[f"Claude 검증{tag}"] = r["tier"]

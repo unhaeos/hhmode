@@ -133,15 +133,20 @@ class Parse(unittest.TestCase):
         self.assertEqual(am.author_tier("**Risk tier: high**"), "high")
         self.assertIsNone(am.author_tier("**Risk tier: low | medium | high**"))
 
-    # Verifier on a93fe87: two tiers joined by a hyphen read as the first (lower) one (P1), and punctuation after
-    # the word read as no tier (P2; PR #9's real body).
-    def test_two_tiers_read_as_none_and_punctuation_ends_the_tier(self):
-        self.assertIsNone(am.gpt_tier("## Tier\nmedium - high — scripts/x.py: y\n"))
-        self.assertIsNone(am.author_tier("Risk tier: medium - high"))
-        for text, want in (("medium.", "medium"), ("**high**, because x", "high"), ("high; x", "high"),
-                           ("`high` — x", "high"), ("high—a.py", "high"), ("**medium** - a.py: not high", "medium")):
+    # Verifier on a93fe87 and 8ddbe0d: two tiers joined by a dash read as the lower one; only a value that is one
+    # tier word counts, so every such line reads as none and the merge stops.
+    def test_only_a_value_that_is_one_tier_word_counts(self):
+        for text in ("medium - high — scripts/x.py: y", "medium – high — x", "medium–high", "low, but high in x",
+                     "medium. high in parts", "high; x", "low | medium | high — <path: reason>", "low-to-medium — x",
+                     "medium - scripts/low.py: behaviour change"):
+            self.assertIsNone(am.first_tier(text), text)
+        for text, want in (("medium.", "medium"), ("**high**, because x", "high"), ("`high` — x", "high"),
+                           ("**medium** - a.py: not high", "medium"), ("high — a.py: from low to medium", "high"),
+                           ("medium (not high: no gate)", "medium")):
             self.assertEqual(am.first_tier(text), want, text)
+        self.assertIsNone(am.author_tier("Risk tier: **medium – high**"))
         self.assertEqual(am.author_tier("**Risk tier: medium.** This **loosens the review gate**"), "medium")
+        self.assertEqual(am.author_tier("**Risk tier: high.** It takes the highest of the three tiers, not low."), "high")
 
     def test_load_records_follows_since(self):
         gate = pathlib.Path(tempfile.mkdtemp())
