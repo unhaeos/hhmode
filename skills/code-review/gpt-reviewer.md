@@ -16,26 +16,13 @@ data loss, security holes, broken behavior.
 Severity: P0 data loss, security hole, crash or broken main flow. P1 wrong behavior in a realistic case.
 P2 edge case or maintainability risk with a concrete consequence. P3 minor.
 
-Output exactly this, in English:
+Answer in the JSON schema you are given, in English. It has three keys, all required:
 
-```
-## Findings
-### F1 [P1] <short title>
-- location: path:line
-- trigger: <input / state / sequence that makes it fail>
-- evidence: <the path to the failure, with the quoted lines>
-- fix: <one line, optional>
-```
+- `findings`: a list, empty when you found nothing ("no findings" is a valid and common outcome). Each finding has
+  `id` (`F1`, `F2`, ...), `priority` (`P0` to `P3`), `title` (short), `location` (`path:line`), `trigger` (the
+  input, state or sequence that makes it fail), `evidence` (the path to the failure, with the quoted lines) and
+  `fix` (one line; an empty string when you have none).
+- `tier`: the risk tier of the whole change by the rubric appended below. Exactly one of `low`, `medium`, `high`.
+- `tier_reason`: the changed path that decides the tier and a one-line reason, as `<path>: <reason>`.
 
-or `## Findings\nnone`.
-
-Then, always, the risk tier of the whole change by the rubric appended below, with the changed path that
-decides it:
-
-```
-## Tier
-<tier> — <path: one-line reason>
-```
-
-`<tier>` is exactly one of `low`, `medium`, `high`: one plain word (no bold, no range), then a space, an em dash and
-a space. The merge reads only this form; anything else counts as no tier and stops the merge.
+A `high` tier sends the change to the user instead of merging it, so rate the whole change, not just your findings.

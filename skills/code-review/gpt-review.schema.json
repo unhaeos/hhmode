@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string"},
+          "priority": {"type": "string", "enum": ["P0", "P1", "P2", "P3"]},
+          "title": {"type": "string"},
+          "location": {"type": "string"},
+          "trigger": {"type": "string"},
+          "evidence": {"type": "string"},
+          "fix": {"type": "string"}
+        },
+        "required": ["id", "priority", "title", "location", "trigger", "evidence", "fix"],
+        "additionalProperties": false
+      }
+    },
+    "tier": {"type": "string", "enum": ["low", "medium", "high"]},
+    "tier_reason": {"type": "string"}
+  },
+  "required": ["findings", "tier", "tier_reason"],
+  "additionalProperties": false
+}

@@ -6,7 +6,7 @@ Only a verdict from an agent that did not write the code counts, because an auth
 build (pstack `shipping.md`). You do not fix the code; you report what you find.
 
 The prompt gives you: your working directory (a fresh worktree checked out at the commit), the commit sha,
-the base (`origin/main`), the mode (`standard` or `full`), your session id, a work directory for your two
+the base (`origin/main`), the mode (`standard` or `fix`), your session id, a work directory for your two
 output files, the python to use, and the exact `record_review.py` command to run at the end. When the branch
 closes an issue (`Closes #<n>` in a commit message), it also names a file with the issue text, and the command
 ends with `--issues <file>`.
@@ -32,20 +32,26 @@ run it with `<python> .verify/<name>.py`.
    and its summary line. If no test can be run, `status: blocked` with the reason.
 
 3. **Review lanes.** Follow the `code-review` skill, Steps 2–4, yourself: spawn `bug-reviewer` (lane `bug`)
-   and `rules-reviewer` (lane `rules`); in `full` mode also a `bug-reviewer` with `model: fable` (lane
-   `bug-fable`). Give them the intent, the diff and the repo path, nothing else: no focus lists, no claims
-   about the code (Step 2). Spawn `finding-validator` for every P0/P1 and record its verdict on the finding.
+   and, in a `standard` review, `rules-reviewer` (lane `rules`). Give them the intent, the diff and the repo
+   path, nothing else: no focus lists, no claims about the code (Step 2). Spawn `finding-validator` for every
+   P0/P1 and record its verdict on the finding.
    - When the prompt gives a scope (`since <sha>`), the diff you give the reviewers is `git diff <sha>..HEAD`.
      Read the earlier record yourself: for each of its P0/P1 findings and rule violations, check in the new
      diff whether it was addressed, and list any that was not as a finding again.
-   - **GPT lane (`bug-gpt`), both modes.** The launcher already ran a GPT reviewer (Codex) on the same scope
-     and the prompt gives its status and output file. You do not run it. If the status is `ran`, record the
-     lane as `ran` and treat its findings like any reviewer's: merge duplicates, send each P0/P1 to
-     `finding-validator`. Codex could not run commands or read the repo, so its findings come from the diff and
-     the changed files only. Validate them against the code before you believe them. If the status is
-     `blocked`, record the lane `blocked` with that reason.
-   - `raised_by` is the lane name (`bug`, `rules`, `bug-fable`, `bug-gpt`, `live`, `verify`), joined with `+`
-     when several lanes raised the same finding. `record_review.py` refuses anything else.
+   - **Fix round (mode `fix`).** The change since the reviewed commit is small, so the lanes are `bug`,
+     `verify` and `live` only: no `rules` lane and no GPT lane, and Codex does not run. The `bug` lane reads
+     `git diff <sha>..HEAD` and you check the earlier record's findings as above.
+   - **GPT lane (`bug-gpt`), `standard` only.** The launcher started a GPT reviewer (Codex) in the background
+     on the same scope before you started, and the prompt names its output file. You do not run it. Before you
+     read that file or record this lane, run exactly `bash .verify/wait_codex.sh`. It waits until Codex is done
+     (up to 25 minutes) and prints `ran` or `blocked: <reason>`; if your Bash call times out first, run it
+     again. Never record before it has printed one of those. If it printed `ran`, record the lane as `ran` and
+     treat Codex's findings like any reviewer's: merge duplicates, send each P0/P1 to `finding-validator`.
+     Codex could not run commands or read the repo, so its findings come from the diff and the changed files
+     only. Validate them against the code before you believe them. If it printed `blocked`, record the lane
+     `blocked` with that reason.
+   - `raised_by` is the lane name (`bug`, `rules`, `bug-gpt`, `live`, `verify`), joined with `+` when several
+     lanes raised the same finding. `record_review.py` refuses anything else.
 
 4. **Live lane.** Run the change the way a user would, on the real surface, on this commit. A verdict is not
    clean without it (pstack `autopilot-full.md`).
@@ -86,9 +92,11 @@ run it with `<python> .verify/<name>.py`.
 
    Set `tier` yourself from the whole diff (not the commit's scope) by `references/tiers.md`, and name the
    changed path that decides it in `tier_reason`. Do not copy the author's tier: below high the change merges
-   without the user, and the merge takes the higher of yours and the Codex review's (the author's is not read).
+   without the user, and the merge takes the higher of yours and the Codex review's (the author's is not read;
+   a fix round has no Codex review of its own, so the merge uses the earlier standard review's).
 
-   `result.json`:
+   `result.json` (`mode` is the one the prompt names; in a fix round the lanes are `bug` and `live`, and
+   `verify` only when the repo has no `scripts/verify.py`):
    ```json
    {"sha": "<full sha>", "mode": "standard",
     "tier": "low", "tier_reason": "<path: one-line reason>",

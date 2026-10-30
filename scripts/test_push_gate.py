@@ -46,6 +46,23 @@ class PushGate(unittest.TestCase):
         (self.gate / f"{sha}.review.md").write_text(
             rr.render(verdict, named or sha, result, "report", "s" * 36, verify), encoding="utf-8")
 
+    # review_weight.py: a wording-only commit gets a carried record and no verifier session of its own.
+    def test_a_carried_record_lets_it_through(self):
+        sha = self.branch()
+        self.gate.mkdir(exist_ok=True)
+        (self.gate / f"{sha}.review.md").write_text(rr.render_carry(sha, "e" * 40, ["README.md"], "low"),
+                                                    encoding="utf-8")
+        self.assertEqual(self.push("task").returncode, 0)
+
+    # Records written before `full` was dropped still count.
+    def test_an_old_full_record_lets_it_through(self):
+        sha = self.branch()
+        self.gate.mkdir(exist_ok=True)
+        (self.gate / f"{sha}.review.md").write_text(
+            f"**Review: PASS** · {sha[:7]} · full · verifier 1\n\n<!-- verifier-session: s; verify: PASS; lanes: -->\n",
+            encoding="utf-8")
+        self.assertEqual(self.push("task").returncode, 0)
+
     def push(self, *refs):
         return git(self.repo, "push", "-q", "origin", *refs, check=False)
 
