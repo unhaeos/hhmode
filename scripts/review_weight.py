@@ -16,6 +16,7 @@ from __future__ import annotations
 import pathlib
 import sys
 
+import forms  # noqa: E402
 import record_review as rr
 
 # Wording nobody executes: README.md, log.md and anything under docs/. A change that touches only these has nothing for
@@ -28,8 +29,15 @@ FIX_LINES = 150
 
 
 def changed_paths(repo: pathlib.Path, since: str, head: str) -> list[str]:
-    # -z: names as they are, not quoted when they are not ASCII
-    return [n for n in rr.git(repo, "diff", "-z", "--name-only", f"{since}..{head}").split("\0") if n]
+    # -z: names as they are, not quoted when they are not ASCII. --no-renames: a moved file counts at both paths, so
+    # `git mv app.py docs/app.py` is not wording only (verifier and Codex on 9aadb3c).
+    return [n for n in rr.git(repo, "diff", "-z", "--name-only", "--no-renames", f"{since}..{head}").split("\0") if n]
+
+
+def new_closes(repo: pathlib.Path, since: str, head: str) -> list[int]:
+    """Issues a commit after `since` says it closes: their criteria were never judged, so they need a verifier
+    (verifier on 9aadb3c: a README-only commit that added `Closes #7` was carried with no criteria table)."""
+    return forms.closes(rr.git(repo, "log", "--format=%B", f"{since}..{head}"))
 
 
 def is_wording(path: str) -> bool:
@@ -63,6 +71,10 @@ def weight(repo: pathlib.Path | str, since: str | None, head: str) -> tuple[str,
     s7 = since[:7]
     paths = changed_paths(repo, since, head)
     rec = rr.gate_dir(repo) / f"{since}.review.md"
+    closes = new_closes(repo, since, head)
+    if closes and all(is_wording(p) for p in paths):
+        return "fix", (f"Only wording changed since {s7}, but a commit since then closes #{closes[0]}, so a verifier "
+                       "judges its acceptance criteria.")
     if all(is_wording(p) for p in paths) and rec.exists() and rr.carryable(rec.read_text(encoding="utf-8")):
         what = f"Only wording changed since {s7} ({', '.join(paths)})" if paths else f"Nothing changed since {s7}"
         return "carry", f"{what} and that review passed, so its result carries over without a new review."

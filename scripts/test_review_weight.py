@@ -56,6 +56,23 @@ class Weight(unittest.TestCase):
         path.parent.mkdir(exist_ok=True)
         path.write_text(text, encoding="utf-8")
 
+    # Verifier and Codex on 9aadb3c: with rename detection, `git mv app.py docs/app.py` listed only docs/app.py.
+    def test_code_moved_into_docs_is_not_wording(self):
+        self.review(self.first)
+        (self.repo / "docs").mkdir()
+        self.git("mv", "app.py", "docs/app.py")
+        self.commit("move")
+        self.assertNotEqual(self.kind(), "carry")
+
+    # Verifier on 9aadb3c: a wording-only commit that closes an issue was carried with no criteria judged.
+    def test_a_wording_commit_that_closes_an_issue_gets_a_verifier(self):
+        self.review(self.first)
+        self.write("README.md", "hello again\n")
+        self.commit("docs: say hello\n\nCloses #7")
+        kind, why = rw.weight(self.repo, self.first, "HEAD")
+        self.assertEqual(kind, "fix")
+        self.assertIn("#7", why)
+
     def test_the_first_review_on_a_branch_is_standard(self):
         for since in (None, ""):
             kind, reason = rw.weight(self.repo, since, "HEAD")

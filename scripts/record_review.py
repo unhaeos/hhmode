@@ -255,7 +255,7 @@ def check_since(repo: pathlib.Path, gdir: pathlib.Path, sha: str, since: str, mo
     return full
 
 
-def render_carry(sha: str, since: str, paths: list[str], tier: str | None) -> str:
+def render_carry(sha: str, since: str, paths: list[str], tier: str | None, verify: str = "PASS") -> str:
     """The record of a commit that only changed wording, taken from the PASS record of `since`. The first line is
     what the gates read (automerge.HEAD_RE: the mode is `carry`, and its `since` makes automerge read the earlier
     record's tiers too). The tests passed on `since`: carryable() requires it."""
@@ -263,7 +263,7 @@ def render_carry(sha: str, since: str, paths: list[str], tier: str | None) -> st
     what = f"Only wording changed since {s7} ({', '.join(paths)})" if paths else f"Nothing changed since {s7}"
     return (f"**Review: PASS** · {sha[:7]} · carry · since {s7} · carried\n\n"
             f"{what}, so the review of {s7} carries over and no verifier session ran on this commit.\n\n"
-            f"<!-- verifier-session: carried-from-{since}; verify: PASS; {f'tier: {tier}; ' if tier else ''}"
+            f"<!-- verifier-session: carried-from-{since}; verify: {verify}; {f'tier: {tier}; ' if tier else ''}"
             f"lanes: carried@{s7} -->\n")
 
 
@@ -285,10 +285,22 @@ def carry(repo: pathlib.Path, since: str) -> pathlib.Path:
     kind, why = review_weight.weight(repo, full, sha)
     if kind != "carry":
         raise Refused(f"this change is not wording only ({kind}): {why}")
+    # The tests: a verify record on this commit decides, and a FAIL or BLOCKED one is never carried over as PASS
+    # (verifier and Codex on 9aadb3c). A repo with scripts/verify.py needs one; elsewhere the earlier PASS stands,
+    # since only wording nobody executes changed.
+    own = gdir / f"{sha}.verify.json"
+    if own.exists():
+        verify = verify_verdict(gdir, sha)
+        if verify != "PASS":
+            raise Refused(f"{sha[:7]} has a verify record of {verify}; a carried record would hide it")
+    elif (repo / "scripts" / "verify.py").exists():
+        raise Refused(f"no verify record for {sha[:7]}: run the repo's verify step on this commit, then carry")
+    else:
+        verify = "PASS"
     tier = re.search(r"; tier: (\w+); lanes:", text)
     out = gdir / f"{sha}.review.md"
     out.write_text(render_carry(sha, full, review_weight.changed_paths(repo, full, sha),
-                                tier.group(1) if tier else None), encoding="utf-8")
+                                tier.group(1) if tier else None, verify), encoding="utf-8")
     gpt = gdir / f"{full}.gpt.md"
     if gpt.exists():            # automerge reads the Codex tier next to the record
         shutil.copyfile(gpt, gdir / f"{sha}.gpt.md")

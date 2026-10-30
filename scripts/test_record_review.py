@@ -592,6 +592,26 @@ class Carry(unittest.TestCase):
                                    f"lanes: carried@{self.first[:7]} -->")
         self.assertEqual(len(lines), 5)
 
+    # Verifier and Codex on 9aadb3c: the carried record said verify: PASS whatever this commit's own tests said.
+    def test_this_commits_failed_verify_is_never_carried_as_pass(self):
+        second = self.wording_commit()
+        for verdict in ("FAIL", "BLOCKED"):
+            (self.gate / f"{second}.verify.json").write_text(json.dumps({"sha": second, "verdict": verdict}))
+            self.assertEqual(self.carry(self.first), 2, verdict)
+            self.assertFalse((self.gate / f"{second}.review.md").exists())
+
+    def test_a_repo_with_a_verify_step_needs_this_commits_verify_record(self):
+        (self.repo / "scripts").mkdir()
+        (self.repo / "scripts" / "verify.py").write_text("print('ok')\n")
+        self.commit("add verify")
+        base = self.git("rev-parse", "HEAD")
+        self.review(base)
+        second = self.wording_commit()
+        self.assertEqual(self.carry(base), 2)
+        (self.gate / f"{second}.verify.json").write_text(json.dumps({"sha": second, "verdict": "PASS"}))
+        self.assertEqual(self.carry(base), 0)
+        self.assertIn("; verify: PASS;", self.record(second))
+
     def test_the_gates_read_a_carried_record_but_it_is_no_review_base(self):
         second = self.wording_commit()
         self.assertEqual(self.carry(self.first), 0)
