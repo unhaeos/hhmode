@@ -118,6 +118,18 @@ class Parse(unittest.TestCase):
         self.assertIsNone(am.gpt_tier("## Tier\nlow | medium | high — <path: reason>\n"))
         self.assertIsNone(am.gpt_tier("## Tier\nlow-to-medium — x\n"))
 
+    def test_load_records_follows_since(self):
+        gate = pathlib.Path(tempfile.mkdtemp())
+        result = {"sha": SHA, "mode": "standard", "tier": "low", "lanes": [], "findings": []}
+        s = "11111111-2222-3333-4444-555555555555"
+        (gate / f"{SHA}.review.md").write_text(rr.render("PASS", SHA, result, "r", s, "PASS", since=OLD))
+        (gate / f"{SHA}.gpt.md").write_text(GPT_LOW)
+        (gate / f"{OLD}.review.md").write_text(rr.render("PASS", OLD, {**result, "sha": OLD}, "r", s, "PASS"))
+        (gate / f"{OLD}.gpt.md").write_text(GPT_MED)
+        recs = am.load_records(gate, SHA)
+        self.assertEqual([r["sha"] for r in recs], [SHA, OLD])
+        self.assertEqual([r["gpt"] for r in recs], ["low", "medium"])
+
     # PR #13 and the verifier on a93fe87 / 8ddbe0d / c982ba2: only `<tier> — <reason>` counts.
     def test_codex_tier_only_in_its_exact_form(self):
         line = "## Tier\n{}\n"
