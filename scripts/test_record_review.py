@@ -10,10 +10,16 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
+import automerge as am  # noqa: E402
 import record_review as rr  # noqa: E402
 
 SHA = "a" * 40
 OLD = "b" * 40
+SESSION = "11111111-2222-3333-4444-555555555555"
+ISSUES = ("# Issue #7: One header per project\n\n## Background\nx\n\n## Acceptance criteria\n"
+          "- [ ] AC1: one header\n- [ ] AC2: no duplicates\n\n## Out of scope\nnone\n\n## Risk\nlow — docs\n\n"
+          "# Issue #8: Second\n\n## Acceptance criteria\n- [ ] AC1: works\n")
+WANT = [(7, "AC1"), (7, "AC2"), (8, "AC1")]
 
 
 def result(**over):
@@ -136,6 +142,119 @@ class Check(unittest.TestCase):
             rr.check(result(sha=OLD), SHA, "PASS")
 
 
+def entry(issue, ac, status="met", evidence="python3 -m unittest -> OK"):
+    return {"issue": issue, "id": ac, "status": status, "evidence": evidence}
+
+
+def judged(**change):
+    """An entry for each expected criterion, `change` applied to the (7, AC2) one."""
+    return [{**entry(n, ac), **(change if (n, ac) == (7, "AC2") else {})} for n, ac in WANT]
+
+
+class Criteria(unittest.TestCase):
+    """The issue's acceptance criteria (forms.py) reach the verdict: each one is judged with evidence."""
+
+    def test_criteria_are_read_per_issue(self):
+        self.assertEqual(rr.issue_criteria(ISSUES), WANT)
+        self.assertEqual(rr.issue_criteria(""), [])
+        self.assertEqual(rr.issue_criteria("# Issue #9: old issue\n\nno sections here\n"), [])
+
+    def test_all_met_passes(self):
+        self.assertEqual(rr.check(result(criteria=judged()), SHA, "PASS", WANT), "PASS")
+
+    def test_a_criterion_without_an_entry_is_refused(self):
+        with self.assertRaises(rr.Refused) as cm:
+            rr.check(result(criteria=judged()[:2]), SHA, "PASS", WANT)
+        self.assertIn("AC1 of issue #8", str(cm.exception))
+        with self.assertRaises(rr.Refused):
+            rr.check(result(), SHA, "PASS", WANT)
+        # an entry that names the issue as text is not the entry for issue 7
+        with self.assertRaises(rr.Refused):
+            rr.check(result(criteria=judged(issue="7")), SHA, "PASS", WANT)
+
+    def test_an_unknown_status_is_refused(self):
+        for bad in ("Met", "pass", "", None):
+            with self.assertRaises(rr.Refused):
+                rr.check(result(criteria=judged(status=bad)), SHA, "PASS", WANT)
+
+    def test_met_and_not_met_need_evidence_but_unclear_does_not(self):
+        for status in ("met", "not-met"):
+            for blank in ("", "  ", None):
+                with self.assertRaises(rr.Refused):
+                    rr.check(result(criteria=judged(status=status, evidence=blank)), SHA, "PASS", WANT)
+        self.assertEqual(rr.check(result(criteria=judged(status="unclear", evidence="")), SHA, "PASS", WANT), "PASS")
+
+    def test_not_met_is_issues_like_a_confirmed_p1(self):
+        self.assertEqual(rr.check(result(criteria=judged(status="not-met")), SHA, "PASS", WANT), "ISSUES")
+
+    def test_a_blocked_lane_still_wins_over_not_met(self):
+        lanes = lanes_with("bug", status="blocked", reason="GPU busy")
+        self.assertEqual(rr.check(result(lanes=lanes, criteria=judged(status="not-met")), SHA, "PASS", WANT),
+                         "BLOCKED")
+
+    def test_no_issue_means_no_criteria_are_asked_for(self):
+        self.assertEqual(rr.check(result(), SHA, "PASS"), "PASS")
+        self.assertEqual(rr.check(result(criteria=judged(status="Met")), SHA, "PASS"), "PASS")
+
+
+def rendered(res=None, expected=WANT, verdict="PASS", report="### Must fix\n- none"):
+    res = res if res is not None else result(criteria=judged(), findings=[
+        {"id": "F1", "severity": "P2", "raised_by": "bug"}, {"id": "F2", "severity": "P3", "raised_by": "bug"},
+        {"id": "F3", "severity": "P3", "raised_by": "rules"},
+        {"id": "F4", "severity": "P1", "raised_by": "bug", "validation": "REJECTED"}])
+    res = {**res, "tier": "medium"}
+    return rr.render(verdict, SHA, res, report, SESSION, "PASS", expected=expected)
+
+
+class Render(unittest.TestCase):
+    def test_the_first_line_is_what_the_gates_read(self):
+        text = rendered()
+        self.assertEqual(text.splitlines()[0], f"**Review: PASS** · {SHA[:7]} · standard · verifier 11111111")
+        m = am.HEAD_RE.match(text)
+        self.assertEqual((m.group(1), m.group(2), m.group(3)), ("PASS", SHA[:7], "standard"))
+        self.assertEqual(am.record_fields(text), {"review": "PASS", "since": None, "verify": "PASS", "tier": "medium"})
+        self.assertEqual(rr.reviewed_as(text), "standard")
+        since = rr.render("PASS", SHA, result(), "r", SESSION, "PASS", since=OLD)
+        self.assertEqual(am.record_fields(since)["since"], OLD[:7])
+
+    def test_summary_table_follows_the_first_line(self):
+        lines = rendered().splitlines()
+        self.assertEqual(lines[1], "")
+        self.assertEqual(lines[2], "| Verdict | Risk | Tests | Live run | Findings | Acceptance criteria |")
+        self.assertEqual(lines[3], "|---|---|---|---|---|---|")
+        # the rejected P1 is not counted
+        self.assertEqual(lines[4], "| PASS | medium | PASS | ran | P0 0 · P1 0 · P2 1 · P3 2 | 3/3 met |")
+
+    def test_criteria_table_comes_before_the_report_and_the_provenance_comment_after(self):
+        text = rendered(report="REPORT BODY")
+        self.assertIn("### Acceptance criteria\n\n| Issue | Criterion | Status | Evidence |\n|---|---|---|---|\n", text)
+        self.assertIn("| #7 | AC2 | met | python3 -m unittest -> OK |", text)
+        self.assertIn("| #8 | AC1 | met |", text)
+        self.assertLess(text.index("### Acceptance criteria"), text.index("REPORT BODY"))
+        self.assertLess(text.index("REPORT BODY"), text.index("<!-- verifier-session:"))
+        self.assertTrue(text.endswith(" -->\n"))
+
+    def test_without_an_issue_the_cell_is_a_dash_and_there_is_no_criteria_table(self):
+        text = rendered(res=result(), expected=[])
+        self.assertIn("| PASS | medium | PASS | ran | P0 0 · P1 0 · P2 0 · P3 0 | — |", text)
+        self.assertNotIn("### Acceptance criteria", text)
+
+    def test_counts_show_what_is_not_met_and_rule_violations(self):
+        res = result(criteria=judged(status="not-met"),
+                     findings=[{"id": "R1", "severity": "rule", "raised_by": "rules"}])
+        text = rendered(res=res, verdict="ISSUES")
+        self.assertIn("| ISSUES | medium | PASS | ran | P0 0 · P1 0 · P2 0 · P3 0 · rule 1 | 2/3 met |", text)
+        self.assertIn("| #7 | AC2 | not-met |", text)
+
+    def test_evidence_with_a_pipe_or_a_line_break_keeps_its_row(self):
+        text = rendered(res=result(criteria=judged(evidence="grep x | wc -l\n3")))
+        self.assertIn("| #7 | AC2 | met | grep x \\| wc -l 3 |", text)
+
+    def test_live_run_shows_not_applicable(self):
+        res = result(lanes=lanes_with("live", status="not-applicable", reason="docs only"))
+        self.assertIn("| PASS | medium | PASS | not-applicable |", rendered(res=res, expected=[]))
+
+
 class EndToEnd(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -182,6 +301,37 @@ class EndToEnd(unittest.TestCase):
         self.sha = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"],
                                   check=True, capture_output=True, text=True).stdout.strip()
         return first
+
+    def _issues_file(self):
+        path = self.res.parent / "issues.md"
+        path.write_text(ISSUES, encoding="utf-8")
+        return path
+
+    def _main_with_issues(self):
+        return rr.main(["--repo", str(self.repo), "--result", str(self.res), "--report", str(self.rep),
+                        "--session", SESSION, "--mode", "standard", "--log-dir", str(self.logs),
+                        "--issues", str(self._issues_file())])
+
+    def test_issues_given_the_record_carries_the_criteria(self):
+        self._write(criteria=judged())
+        self.assertEqual(self._main_with_issues(), 0)
+        rec = (self.gate / f"{self.sha}.review.md").read_text(encoding="utf-8")
+        self.assertIn("| PASS | low | PASS | ran | P0 0 · P1 0 · P2 0 · P3 0 | 3/3 met |", rec)
+        self.assertIn("| #8 | AC1 | met |", rec)
+        self.assertEqual(am.record_fields(rec)["review"], "PASS")
+
+    def test_issues_given_a_result_without_criteria_is_refused(self):
+        self._write()
+        self.assertEqual(self._main_with_issues(), 2)
+        self.assertFalse((self.gate / f"{self.sha}.review.md").exists())
+        self.assertFalse((self.logs / "myrepo.tsv").exists())
+
+    def test_a_criterion_not_met_makes_the_record_issues(self):
+        self._write(criteria=judged(status="not-met"))
+        self.assertEqual(self._main_with_issues(), 0)
+        rec = (self.gate / f"{self.sha}.review.md").read_text(encoding="utf-8")
+        self.assertTrue(rec.startswith("**Review: ISSUES**"))
+        self.assertIn("2/3 met", rec)
 
     def test_since_a_reviewed_ancestor_is_named_in_the_record(self):
         first = self._second_commit()

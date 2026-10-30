@@ -10,17 +10,31 @@ Modeled on [pstack](https://github.com/cursor/plugins/tree/main/pstack) by Laure
 skills/        One SKILL.md per skill. Symlinked into ~/.claude/skills/<name> and ~/.codex/skills/<name>.
 agents/        Subagent definitions (reviewers). Symlinked into ~/.claude/agents/<name>.md.
 commands/      Claude Code slash commands (Claude Code only). ~/.claude/commands -> this folder.
+templates/     The two forms a task passes through: issue.md and pr.md (copied to .github/ for github.com).
 principles/    One principle per file. Skills reference them by absolute path.
-scripts/       Checks the harness runs instead of trusting text: verify_fresh.sh, record_review.py, automerge.py, sync_self.sh (+ tests).
+scripts/       Checks the harness runs instead of trusting text: forms.py, verify_fresh.sh, record_review.py, automerge.py, sync_self.sh (+ tests).
 log.md         Failure log, one line per incident.
 local/         Machine-local values (identity, paths). Gitignored.
 ```
 
 Not here yet, added when a need appears: a router, per-repo `features/` maps.
 
+## Forms
+
+A task passes through four linked forms, and the three fields they share keep the same names, so what the issue asks for is checked again at every step:
+
+| Form | Where | Shared fields |
+|---|---|---|
+| Issue | `templates/issue.md` (also `.github/ISSUE_TEMPLATE/task.md`); `/issue` writes and opens it | **Acceptance criteria** (numbered `AC1`, `AC2`, ...), **Risk** (`low`, `medium` or `high` plus a reason), **Out of scope** |
+| PR body | `templates/pr.md` (also `.github/pull_request_template.md`); `/pr` step 6 | the same three: every criterion of every closed issue is listed with how it was checked; its Risk section starts with the same `<tier> — <reason>` line as the issue's (for the reader; the merge reads only the verifier's and Codex's tiers) |
+| Verifier record | `scripts/record_review.py` | a verdict, with evidence, on each criterion of the issue; a criterion that is not met makes the review ISSUES |
+| Merge check | `skills/code-review/merge-check.md` | a criterion that is not met or unclear, or a change the issue puts out of scope, sends the PR to the user |
+
+`scripts/forms.py` is the one parser and checker: `python3 scripts/forms.py issue FILE` and `python3 scripts/forms.py pr FILE --issue N=FILE` print one problem per line, or `ok`. `/pr` runs it before opening a PR, and `automerge.py` runs it as one of its facts. The issue comes to the verifier through `Closes #<n>` in a commit message; an issue it cannot read stops `verify_fresh.sh`. Tests: `python3 -m unittest scripts/test_forms.py`; one test fails when a `.github` template drifts from `templates/`.
+
 ## Independent verification
 
-The author of a change does not review it for a gate. `/pr` runs `scripts/verify_fresh.sh`, which starts a fresh headless session at the same commit; that session follows `skills/code-review/verifier.md` (verify step, review lanes, a live lane on the real surface) and writes the record through `scripts/record_review.py`. The script decides the verdict and refuses a record whose lanes did not all run on this commit, a P0/P1 without a validator verdict, or a live lane without evidence; it also appends the review-log rows. Tests: `python3 -m unittest scripts/test_record_review.py`.
+The author of a change does not review it for a gate. `/pr` runs `scripts/verify_fresh.sh`, which starts a fresh headless session at the same commit; that session follows `skills/code-review/verifier.md` (verify step, review lanes, a live lane on the real surface) and writes the record through `scripts/record_review.py`. The script decides the verdict and refuses a record whose lanes did not all run on this commit, a P0/P1 without a validator verdict, a live lane without evidence, or an acceptance criterion of the closed issue with no verdict; it also appends the review-log rows. The record opens with a summary table (verdict, risk, tests, live run, findings, criteria met). Tests: `python3 -m unittest scripts/test_record_review.py`.
 
 ## Push gate
 
@@ -28,7 +42,7 @@ In a repo that turns it on, a branch is pushed only when its tip has a verifier 
 
 ## Auto-merge
 
-`/pr` ends with `scripts/automerge.py <PR#>` once CI has finished. Facts first, for the reviewed commit: the verifier's review and verify are PASS, the Codex review ran, neither the verifier nor Codex rated the tier high (the author's `Risk tier` line is for the reader; it is free text and the author wants the merge) (`skills/code-review/references/tiers.md`), the PR is open into main, mergeable and green. Any fact that fails stops it there. Then the merge check: a fresh headless Claude with no tools reads the PR, the issues it closes, the repo's CLAUDE.md, the records and the diff (`skills/code-review/merge-check.md`) and answers merge or not with a reason; a repo rule that sends the change to the user wins. On yes the script merges that commit (`gh pr merge --match-head-commit`), closes the issues the PR closes if GitHub left them open, and comments the reason on the PR. Slack (`local/notify.json`: `{"token_file": ..., "channel": ...}`) hears only what needs the user: a high tier, the merge check's no, a failed merge or issue close, or `--report` from an author that gave up after three rounds. `local/automerge` = `on` merges; anything else reports what it would have done. Tests: `python3 -m unittest scripts/test_automerge.py`.
+`/pr` ends with `scripts/automerge.py <PR#>` once CI has finished. Facts first, for the reviewed commit: the verifier's review and verify are PASS, the Codex review ran, neither the verifier nor Codex rated the tier high (the author's `## Risk` line is for the reader: it is free text and the author wants the merge) (`skills/code-review/references/tiers.md`), the PR is open into main, mergeable and green, and the PR body fills the PR form and names every acceptance criterion of the issues it closes (`scripts/forms.py`). Any fact that fails stops it there, and the author fixes it. Then the merge check: a fresh headless Claude with no tools reads the PR, the issues it closes, the repo's CLAUDE.md, the records (with their criteria) and the diff (`skills/code-review/merge-check.md`) and answers merge or not with a reason in plain English; a repo rule that sends the change to the user wins, and so does a criterion that is not met or unclear. On yes the script merges that commit (`gh pr merge --match-head-commit`), closes the issues the PR closes if GitHub left them open, and comments the reason on the PR. Slack (`local/notify.json`: `{"token_file": ..., "channel": ...}`) hears only what needs the user: a high tier, the merge check's no, a failed merge or issue close, or `--report` from an author that gave up after three rounds. `local/automerge` = `on` merges; anything else reports what it would have done ("would merge, not merged"). Messages and PR comments are in plain English. Tests: `python3 -m unittest scripts/test_automerge.py`.
 
 ## Install (new machine)
 
@@ -61,6 +75,7 @@ Nothing to start. The symlinks make every skill available in any directory where
 | Improve one metric toward a target | `/hillclimb <metric> to <target>` |
 | Find out why something happens, read-only | `/investigate <question>`, or just ask "why does X ..." |
 | Review staged changes before a commit | `git add ...` then `/code-review` |
+| Write and open an issue from the form | `/issue <what needs doing>` |
 | Open a PR from a task worktree, with evidence | `/pr` |
 | Merge one reviewed PR (merge-owner session) | `/land <PR#>` |
 | Stress-test a plan before implementing | `/plan-review <path to plan>` |

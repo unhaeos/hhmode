@@ -7,7 +7,9 @@ build (pstack `shipping.md`). You do not fix the code; you report what you find.
 
 The prompt gives you: your working directory (a fresh worktree checked out at the commit), the commit sha,
 the base (`origin/main`), the mode (`standard` or `full`), your session id, a work directory for your two
-output files, the python to use, and the exact `record_review.py` command to run at the end.
+output files, the python to use, and the exact `record_review.py` command to run at the end. When the branch
+closes an issue (`Closes #<n>` in a commit message), it also names a file with the issue text, and the command
+ends with `--issues <file>`.
 
 Your Bash commands are allowed by how they start, and nobody is there to approve anything else. Run git
 from your working directory without `-C <dir>`: `git -C ...` matches none of the git rules and is refused.
@@ -65,7 +67,19 @@ run it with `<python> .verify/<name>.py`.
    - Docs-, test- or comment-only change: lane status `not-applicable` with that reason.
    Stop every server you started by PID (`ss -ltnp` to find it), never with `pkill -f`.
 
-5. **Record.** Write `result.json` and `report.md` in the work directory, then run the `record_review.py`
+5. **Acceptance criteria.** Only when the prompt names an issues file. Read it: each issue has an
+   `Acceptance criteria` section whose items are numbered `AC1`, `AC2`, ... Judge every one on this commit, from
+   the code and what you ran, not from the PR text or the commit message:
+   - `met`: you ran it (a test, a command, a request) or you read the exact lines that satisfy it. `evidence` is
+     the command and its output, or `file:line`.
+   - `not-met`: you ran it or read the code and the criterion does not hold. `evidence` shows what happened
+     instead. This makes the verdict ISSUES, like a confirmed P1.
+   - `unclear`: this commit cannot decide it (for example the criterion needs data or a system you cannot
+     reach). Say why in `evidence`. The merge check sends such a PR to the user.
+   Do not mark a criterion `met` because the tests pass; a test only counts if it checks that criterion. Give
+   every criterion of every issue an entry; the script refuses a record with one missing.
+
+6. **Record.** Write `result.json` and `report.md` in the work directory, then run the `record_review.py`
    command from the prompt. It decides the verdict and refuses a record that overclaims. If it prints
    `REFUSED`, do what it names (run the lane on this commit, spawn the validator, add the evidence) and run
    it again. Never write or edit the gate record yourself.
@@ -86,13 +100,19 @@ run it with `<python> .verify/<name>.py`.
     "findings": [
       {"id": "F1", "severity": "P1", "where": "path:line", "raised_by": "bug",
        "validation": "CONFIRMED", "title": "<one line>"}
+    ],
+    "criteria": [
+      {"issue": 7, "id": "AC1", "status": "met", "evidence": "<command and output, or file:line>"}
     ]}
    ```
    `status` is `ran`, `blocked` (with `reason`) or, for `live` only, `not-applicable` (with `reason`).
    `severity` is `P0`–`P3` or `rule`. `validation` is `CONFIRMED` / `PLAUSIBLE` / `REJECTED` for P0/P1.
    Rejected findings stay in the list with `REJECTED`.
+   `criteria` is needed only with an issues file: one entry for each criterion in it, `issue` as a number,
+   `status` `met` / `not-met` / `unclear`, `evidence` filled for `met` and `not-met`.
 
-   `report.md`: the `code-review` Step 6 block without its first line (the script writes that line): Must fix,
-   Rule violations, Rejected by validation, Notes, then a `### Live lane` section with the evidence.
+   `report.md`: the `code-review` Step 6 block without its first line, in English (the script writes that line
+   and, under it, a summary table and the criteria table): Must fix, Rule violations, Rejected by validation,
+   Notes, then a `### Live lane` section with the evidence.
 
-6. **Reply** with the line `record_review.py` printed and the record path. Nothing else.
+7. **Reply** with the line `record_review.py` printed and the record path. Nothing else.

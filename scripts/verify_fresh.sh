@@ -15,6 +15,11 @@
 # in at least this mode, the review lanes read only the diff after it (`--since`). When this commit already has a verify record that ran (PASS or
 # FAIL), the verifier reads it instead of running verify.py again — about ten minutes in k-defense-kg, where the
 # verifier re-ran the author's verify on the same sha (verify-d89c2a1, 2026-10-29). A BLOCKED record runs again.
+#
+# Issues (scripts/forms.py): a commit message that says `Closes #<n>` names the issue this branch answers. Its text is
+# written to .verify/issues.md; the verifier judges every acceptance criterion in it, and Codex reads it too. An issue
+# that cannot be read stops the run (NO ISSUE, exit 1) rather than being skipped, so a criterion is never dropped by
+# accident.
 set -euo pipefail
 
 src="${1:?usage: verify_fresh.sh <task worktree> [standard|full]}"
@@ -55,6 +60,26 @@ session="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 work="$vdir/.verify"
 mkdir -p "$work"
 
+# The issues this branch closes, from its commit messages. PRINT_PROMPT=1 stays offline: it lists the numbers only.
+issues="$work/issues.md"
+: > "$issues"
+issue_nums=$(git -C "$src" log --format=%B origin/main..HEAD 2>/dev/null | python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+import forms
+print(*forms.closes(sys.stdin.read()))' "$here/scripts" || true)
+for n in $issue_nums; do
+  if [ "${PRINT_PROMPT:-0}" = "1" ]; then
+    printf '# Issue #%s: (not read: dry run)\n\n' "$n" >> "$issues"
+  elif one=$(cd "$src" && gh issue view "$n" --json number,title,body \
+               --jq '"# Issue #\(.number): \(.title)\n\n\(.body // "")\n"' 2>"$work/issue.err"); then
+    printf '%s\n' "$one" >> "$issues"
+  else
+    echo "NO ISSUE: could not read issue #$n: $(cat "$work/issue.err")" >&2
+    exit 1
+  fi
+done
+
 # The newest earlier commit on this branch that a verifier reviewed with every lane run (PASS or ISSUES) in at
 # least this mode — the same test record_review.py --since applies.
 since=""
@@ -92,13 +117,15 @@ PY
 # as the other review lanes. Skipped on a dry run, which must not call out.
 gpt="$work/gpt-review.md"
 gpt_status="not run (dry run)"
+gpt_issues=(); [ -s "$issues" ] && gpt_issues=("$issues")
 if [ "${PRINT_PROMPT:-0}" != "1" ]; then
   gbase="${since:-$(git -C "$vdir" merge-base origin/main HEAD 2>/dev/null || true)}"
   if ! command -v codex >/dev/null; then
     gpt_status="blocked: codex CLI not installed"
   elif [ -z "$gbase" ]; then
     gpt_status="blocked: no origin/main to diff against"
-  elif ! python3 "$here/scripts/gpt_review_input.py" "$vdir" "$gbase" > "$work/gpt-input.md" 2> "$work/gpt-input.err"; then
+  elif ! python3 "$here/scripts/gpt_review_input.py" "$vdir" "$gbase" ${gpt_issues[@]+"${gpt_issues[@]}"} \
+         > "$work/gpt-input.md" 2> "$work/gpt-input.err"; then
     gpt_status="blocked: building the input failed, see $work/gpt-input.err"
   elif timeout 1500 codex exec -s read-only --ephemeral -C "$vdir" -c 'model_reasoning_effort="high"' \
          -o "$gpt" "$(cat "$here/skills/code-review/gpt-reviewer.md" "$here/skills/code-review/references/tiers.md")" \
@@ -111,6 +138,7 @@ if [ "${PRINT_PROMPT:-0}" != "1" ]; then
 fi
 
 record="python3 $here/scripts/record_review.py --repo $vdir --result $work/result.json --report $work/report.md --session $session --mode $mode${since:+ --since $since}"
+[ -s "$issues" ] && record="$record --issues $issues"
 py=python3; [ -x "$main_repo/.venv/bin/python" ] && py="$main_repo/.venv/bin/python"
 # Commands, skills and agents this commit changes, staged as <name>-new outside the worktree for the live lane.
 staged=$(bash "$here/scripts/stage_live_claude.sh" "$vdir" "$vdir.live" "$work/ask.sh" 2>"$work/stage.err") || staged=""
@@ -122,6 +150,12 @@ if [ -n "$since" ]; then
   prompt="$prompt
 Scope: ${since:0:7} was already reviewed (record $common/gate/$since.review.md). Review lanes read only \
 git diff $since..HEAD, plus that record to check its findings were addressed (verifier.md step 3)."
+fi
+if [ -s "$issues" ]; then
+  inums=$(printf '#%s, ' $issue_nums)
+  prompt="$prompt
+Issues: this branch closes ${inums%, }; their text is in $issues. Judge every acceptance criterion in it and give \
+each one an entry in the criteria list of result.json (verifier.md step 5)."
 fi
 if [ -n "$vdone" ]; then
   prompt="$prompt
@@ -192,6 +226,16 @@ fi
 # The verifier builds the record command itself, so check the mode it recorded is the one asked for.
 if ! head -n 1 "$rec" | grep -qF "· $mode ·"; then
   echo "MODE MISMATCH: asked for $mode, record says: $(head -n 1 "$rec")" >&2
+  KEEP=1; echo "kept $vdir for inspection" >&2
+  exit 1
+fi
+# A PR that closes an issue is judged against its acceptance criteria: a record without the criteria table means the
+# verifier skipped them (verifier on 5342eef: the launcher checked the session and the mode, not this).
+# Only when an issue names criteria: one written before the form, with no ACn ids, has none to judge and gets no table
+# (verifier on 5f3ba7a: the check refused every rerun of such a branch).
+ncrit=$( [ -s "$work/issues.md" ] && python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import record_review as rr; print(len(rr.issue_criteria(open(sys.argv[2], encoding="utf-8").read())))' "$here/scripts" "$work/issues.md" 2>/dev/null || echo 0)
+if [ "${ncrit:-0}" -gt 0 ] && ! grep -q '^### Acceptance criteria' "$rec"; then
+  echo "NO CRITERIA: the issues name $ncrit acceptance criteria, but the record for ${sha:0:7} has no criteria table." >&2
   KEEP=1; echo "kept $vdir for inspection" >&2
   exit 1
 fi

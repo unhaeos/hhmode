@@ -58,7 +58,7 @@ class PushGate(unittest.TestCase):
         sha = self.branch()
         r = self.push("task")
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn(f"task ({sha[:7]}): 독립 검증 기록이 없다", r.stderr)
+        self.assertIn(f"task ({sha[:7]}): no independent verification record", r.stderr)
         self.assertIn("verify_fresh.sh", r.stderr)
 
     def test_a_verifier_record_lets_it_through(self):
@@ -74,7 +74,7 @@ class PushGate(unittest.TestCase):
         self.record(self.branch(), verdict="ISSUES", verify="FAIL")
         r = self.push("task")
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("테스트(verify)가 실패한 기록", r.stderr)
+        self.assertIn("the record says the tests (verify) failed", r.stderr)
 
     # A record copied to another commit's name is not that commit's record.
     def test_a_record_naming_another_commit_does_not_count(self):

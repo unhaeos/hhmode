@@ -139,7 +139,7 @@ This block is also the PR comment `/pr` posts. Raw reviewer outputs go in a coll
 only when the user asks.
 
 **Gate record.** Only the verifier writes it, and only through `scripts/record_review.py`
-(see `verifier.md`, step 5). The script writes `<git common dir>/gate/<sha>.review.md` and refuses
+(see `verifier.md`, step 6). The script writes `<git common dir>/gate/<sha>.review.md` and refuses
 a record whose lanes did not all run on this commit, a P0/P1 without a validator verdict, or a
 missing live lane. Nobody writes or edits that file by hand. A staged or working-tree review never
 gets one — it does not certify a commit.

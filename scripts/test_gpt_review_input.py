@@ -40,6 +40,29 @@ class Build(unittest.TestCase):
         self.assertEqual(out.count("x = 2"), 100)        # 50 lines in the diff, 50 in the whole file
         self.assertNotIn("### gone.py", out)
 
+    def test_the_issue_comes_first_when_given(self):
+        # the reviewer judges the change against the acceptance criteria it is meant to meet
+        (self.repo / "keep.py").write_text("a = 2\n", encoding="utf-8")
+        self.git("commit", "-qam", "change")
+        issues = "# Issue #7: one header per project\n\n## Acceptance criteria\n- [ ] AC1: one header\n"
+        out = gi.build(self.repo, self.base, issues)
+        self.assertTrue(out.startswith("## Issue(s) this change closes\n\n# Issue #7: one header per project"))
+        self.assertLess(out.index("AC1: one header"), out.index("## Diff"))
+        self.assertNotIn("## Issue(s)", gi.build(self.repo, self.base))
+        self.assertNotIn("## Issue(s)", gi.build(self.repo, self.base, "  \n"))
+
+    def test_the_command_line_takes_the_issues_file_as_a_third_argument(self):
+        (self.repo / "keep.py").write_text("a = 2\n", encoding="utf-8")
+        self.git("commit", "-qam", "change")
+        issues = self.repo.parent / f"issues-{self.repo.name}.md"
+        issues.write_text("# Issue #7: x\n\n- [ ] AC1: y\n", encoding="utf-8")
+        self.addCleanup(issues.unlink)
+        script = pathlib.Path(gi.__file__)
+        run = lambda *a: subprocess.run([sys.executable, str(script), str(self.repo), self.base, *a],
+                                        check=True, capture_output=True, text=True).stdout
+        self.assertIn("AC1: y", run(str(issues)))
+        self.assertNotIn("Issue(s)", run())
+
     def test_a_symlink_to_an_outside_file_is_not_sent(self):
         # independent review of ac095e1: read_text followed a committed link and put an outside file into the input
         secret = pathlib.Path(self.tmp.name).parent / f"secret-{pathlib.Path(self.tmp.name).name}"
