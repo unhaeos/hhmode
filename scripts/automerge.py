@@ -402,6 +402,20 @@ CI_WORDS = {"none": "none", "ok": "passing", "pending": "running", "failing": "f
 MERGEABLE_WORDS = {"MERGEABLE": "no conflicts", "CONFLICTING": "conflicts", "UNKNOWN": "still checking"}
 
 
+# A mark in front of a message the user should tell apart at a glance in Slack (user, 2026-11-02, hhmode #23): one
+# they act on, one that failed, one that merged. post_once compares messages without it.
+MARKS = {"Needs you": "🔔 ", "Merge failed": "⚠️ ", "Merged": "✅ "}
+
+
+def slack_key(text: str) -> str:
+    """What post_once compares: the first line without its mark, so a message sent before the marks existed is not
+    taken for a new one."""
+    first = text.split("\n", 1)[0]
+    for mark in MARKS.values():
+        first = first.removeprefix(mark)
+    return first
+
+
 def message(pr: dict, merge: bool, reasons: list[str], tiers: dict, status: dict, mode: str,
             merged_sha: str | None, error: str | None = None, check: dict | None = None,
             problems: list[str] | None = None, merged_by: str | None = None,
@@ -416,7 +430,7 @@ def message(pr: dict, merge: bool, reasons: list[str], tiers: dict, status: dict
         head = ("[dry-run]" if mode == "dry-run" else "[trial]") + " would merge, not merged"
     else:
         head = "Needs you"
-    lines = [f"*[{repo} #{pr['number']}] {head}* — {pr['title']}",
+    lines = [f"{MARKS.get(head, '')}*[{repo} #{pr['number']}] {head}* — {pr['title']}",
              f"• Review {status['review']} · Tests {status['verify']} · CI {CI_WORDS.get(status['ci'], status['ci'])}"
              f" · {MERGEABLE_WORDS.get(status['mergeable'], status['mergeable'])}",
              "• Risk (any \"high\" needs you): " + " · ".join(f"{k} {v or 'none'}" for k, v in tiers.items())]
@@ -459,7 +473,7 @@ def post_once(text: str, gate: pathlib.Path, number: int, head: str) -> str:
     marked. Only the first line counts (the PR and the outcome): the merge check's reason is Claude's prose, which
     differs from run to run, so hashing the whole message sent the same "Needs you" twice."""
     marker = gate / f"slack-{number}-{head}.sent"
-    digest = hashlib.sha256(text.split("\n", 1)[0].encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(slack_key(text).encode("utf-8")).hexdigest()
     if marker.exists() and digest in marker.read_text().split():
         return "not sent: the same message was already sent for this commit"
     sent = post_slack(text)

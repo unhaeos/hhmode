@@ -27,7 +27,7 @@ def merged_message(pr: dict, tiers: dict, closed: list[int]) -> str:
     """The DM for a merged PR. `pr` carries number, title, url and mergeCommit."""
     repo = am.owner_repo(pr)[1]
     oid = ((pr.get("mergeCommit") or {}).get("oid")) or ""
-    lines = [f"*[{repo} #{pr['number']}] Merged* — {pr['title']}",
+    lines = [f"{am.MARKS['Merged']}*[{repo} #{pr['number']}] Merged* — {pr['title']}",
              f"• Merge commit `{oid[:7] or 'unknown'}`",
              "• Risk: " + (" · ".join(f"{k} {v or 'none'}" for k, v in tiers.items()) or "no review record found")]
     if closed:

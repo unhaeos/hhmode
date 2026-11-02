@@ -23,7 +23,7 @@ class Message(unittest.TestCase):
     # AC2: the PR number and title, the merge commit, the tier, the issues it closed, and how to revert.
     def test_the_dm_names_everything_ac2_asks_for(self):
         text = nm.merged_message(PR, {"Claude verifier": "medium", "Codex review": "low"}, [18, 19])
-        self.assertTrue(text.startswith("*[r #21] Merged* — fix(x): y"))
+        self.assertTrue(text.startswith("✅ *[r #21] Merged* — fix(x): y"))
         self.assertIn("Merge commit `eeeeeee`", text)
         self.assertIn("Risk: Claude verifier medium · Codex review low", text)
         self.assertIn("• Closed: #18, #19", text)
