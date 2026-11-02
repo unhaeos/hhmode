@@ -245,11 +245,15 @@ def codex_review(pr: dict, cwd) -> tuple[list[str], bool, str]:
     o, r = owner_repo(pr)
     n = pr["number"]
     issue_comments = rest_list(f"repos/{o}/{r}/issues/{n}/comments", cwd)
-    uses = any(CODEX_MARK in (c.get("body") or "") for c in issue_comments)
+    # Only the app's own comments say the repo uses it: a marker anyone pasted would make every PR wait for a review
+    # no app will write (verifier and Codex on f97c493). `gh pr list` drops the "[bot]" suffix, so the recent PRs'
+    # comments are read through REST, where the login tells the app from a person.
+    uses = any(CODEX_MARK in (c.get("body") or "") for c in from_codex(issue_comments))
     if not uses:
         recent = json.loads(gh("pr", "list", "-R", f"{o}/{r}", "--state", "all", "--limit", str(CODEX_RECENT),
-                               "--json", "number,comments", cwd=cwd))
-        uses = any(CODEX_MARK in (c.get("body") or "") for p in recent for c in p["comments"])
+                               "--json", "number", cwd=cwd))
+        uses = any(CODEX_MARK in (c.get("body") or "") for q in recent if q["number"] != n
+                   for c in from_codex(rest_list(f"repos/{o}/{r}/issues/{q['number']}/comments", cwd)))
     if not uses:
         return [], False, ""
     reasons, for_user, note = codex_reasons(codex_state(issue_comments), pr["headRefOid"])
@@ -529,7 +533,7 @@ def run(a: argparse.Namespace, repo: pathlib.Path, gate: pathlib.Path) -> int:
         for_user = True
     merge = not reasons
 
-    check = None
+    check = merged_anyway = None
     if merge and not a.dry_run:
         # Anything the check cannot read sends the PR to the user, with the reason, instead of crashing silently
         # after the facts passed (verifier on c470756).
@@ -546,15 +550,30 @@ def run(a: argparse.Namespace, repo: pathlib.Path, gate: pathlib.Path) -> int:
             reasons.append(unread)
         else:
             # Claude gets the merge command only when this run is allowed to merge: mode `on`, not --dry-run.
-            check = merge_check(check_input(pr, issues, records, diff, rules, codex_text),
-                                merge_command(pr) if mode == "on" else None)
+            held = merge_command(pr) if mode == "on" else None
+            check = merge_check(check_input(pr, issues, records, diff, rules, codex_text), held)
             if not check["merge"]:
                 merge, for_user = False, True
                 reasons.append(f"Merge check (Claude): {check['reason']}")
+                if held:
+                    # Claude held the merge command, so it may have run it and then lost its answer (a timeout, no
+                    # structured output) or said no: the PR is read back whatever the answer (verifier and Codex on
+                    # f97c493, P1: a merge that happened was reported as not merged, and its issue left open).
+                    try:
+                        state, oid = merge_state(pr["number"], repo)
+                    except (subprocess.CalledProcessError, KeyError, ValueError):
+                        state, oid = None, None
+                    if state == "MERGED":
+                        merged_anyway = oid or UNKNOWN
 
     merged_sha = merged_by = error = None
     problems: list[str] = []
-    if merge and mode == "on" and not a.dry_run:
+    if merged_anyway:
+        merge, merged_sha, merged_by = True, merged_anyway, BY_CLAUDE
+        problems.append("the merge check's command merged the PR, but its answer was lost or said no: "
+                        f"{check['reason']}")
+        problems += close_issues(issues, pr, merged_sha, repo)
+    elif merge and mode == "on" and not a.dry_run:
         merged_sha, merged_by, error = finish_merge(pr, repo)
         if merged_sha:
             problems = close_issues(issues, pr, merged_sha, repo)

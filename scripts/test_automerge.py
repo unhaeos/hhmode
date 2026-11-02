@@ -313,7 +313,10 @@ def fake_codex(a, codex):
         if codex.get("fails"):
             raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 502: Bad Gateway")
         if a[:2] == ("pr", "list"):
-            return json.dumps(codex.get("recent", []))
+            return json.dumps([{"number": q["number"]} for q in codex.get("recent", [])])
+        if "/issues/" in a[1] and not a[1].endswith("/issues/12/comments"):        # another, recent PR
+            n = int(a[1].split("/issues/")[1].split("/")[0])
+            return json.dumps([next((q["comments"] for q in codex.get("recent", []) if q["number"] == n), [])])
         kind = "issue_comments" if "/issues/" in a[1] else "reviews" if a[1].endswith("/reviews") else "lines"
         return json.dumps([codex.get(kind, [])])      # --slurp: a list of pages
     return None
@@ -390,7 +393,7 @@ def run_main(pr_over=None, records=None, check=None, issue_state="OPEN", lookup_
             probe.append(("check", lock_is_held(gate)))
         answer = check or {"merge": True, "reason": "Names each project once in the weekly report.",
                            "session": "abcd1234-x"}
-        if command and claude_merges and answer["merge"]:
+        if command and claude_merges and (answer["merge"] or claude_merges == "always"):
             st.update(state="MERGED", by="claude")
         return answer
     saved = (am.gh, am.load_records, am.HERE, am.merge_check, am.CLOSE_WAIT, am.post_slack)
@@ -581,7 +584,8 @@ class ClaudeMerges(unittest.TestCase):
         no = {"merge": False, "reason": "scripts/x.py:3 deletes data", "session": ""}
         _, text, calls, _ = run_main(check=no, claude_merges=True)
         self.assertFalse(any(c[:2] == ("pr", "merge") for c in calls))
-        self.assertFalse(any(c[-1] == "state,mergeCommit" for c in calls))      # no read-back, nothing to settle
+        # Claude held the merge command, so the PR is read back even after a no (verifier on f97c493); still open.
+        self.assertTrue(any(c[-1] == "state,mergeCommit" for c in calls))
         self.assertIn("automerge: TO USER", text)
         self.assertIn("[slack]", text)
 
@@ -720,6 +724,26 @@ def codex_comment(security=None, code=None, login=am.CODEX_BOT, prose="## Codex 
             f"<!-- codex-review-state:v1 {json.dumps(state, sort_keys=True)} -->\n{prose}"}
 
 
+class ClaudeAnswerLost(unittest.TestCase):
+    """Verifier and Codex on f97c493 (P1): Claude held the merge command, ran it, and then its answer was lost or said
+    no. The PR is read back whatever the answer."""
+
+    def test_a_merge_claude_ran_is_reported_as_merged_and_its_issue_closed(self):
+        lost = {"merge": False, "reason": "the merge check did not answer: timed out", "session": ""}
+        slack = []
+        rc, text, calls, _ = run_main(check=lost, claude_merges="always", slack=slack)
+        self.assertIn("automerge: MERGED", text)
+        self.assertTrue(any(c[:2] == ("issue", "close") for c in calls))
+        self.assertFalse(any(c[:2] == ("pr", "merge") for c in calls))        # the script did not merge again
+        self.assertTrue(slack and "answer was lost or said no" in slack[0])
+
+    def test_a_no_with_the_pr_still_open_stays_a_no(self):
+        no = {"merge": False, "reason": "scripts/x.py:3 deletes data", "session": "s"}
+        rc, text, calls, _ = run_main(check=no, claude_merges=True)
+        self.assertIn("automerge: TO USER", text)
+        self.assertFalse(any(c[:2] == ("issue", "close") for c in calls))
+
+
 class Codex(unittest.TestCase):
     """The Codex app on GitHub (login chatgpt-codex-connector[bot]) edits one PR comment that carries its state as
     JSON. Only that JSON is read."""
@@ -796,7 +820,7 @@ class Codex(unittest.TestCase):
             am.gh = saved
 
     def test_a_repo_with_no_codex_app_has_no_fact(self):
-        quiet = [{"number": n, "comments": [{"author": {"login": "a"}, "body": "ok"}]} for n in range(11, 1, -1)]
+        quiet = [{"number": n, "comments": [{"user": {"login": "a"}, "body": "ok"}]} for n in range(11, 1, -1)]
         got, calls = self.review({"issue_comments": [{"user": {"login": "a"}, "body": "hi"}], "recent": quiet})
         self.assertEqual(got, ([], False, ""))
         listed = [c for c in calls if c[:2] == ("pr", "list")][0]
@@ -805,10 +829,15 @@ class Codex(unittest.TestCase):
         self.assertFalse(any("reviews" in c[1] or "/pulls/" in c[1] for c in calls if c[0] == "api"))
 
     def test_a_repo_that_used_the_app_on_a_recent_pr_waits_for_it_on_this_one(self):
-        recent = [{"number": 11, "comments": [{"author": {"login": "chatgpt-codex-connector"},
-                                               "body": codex_comment()["body"]}]}]
+        recent = [{"number": 11, "comments": [codex_comment()]}]
         got, _ = self.review({"recent": recent})
         self.assertEqual(got[:2], (["the Codex security review has not finished"], False))
+
+    # Verifier and Codex on f97c493 (P1): a marker anyone pasted made every PR wait for a review no app writes.
+    def test_a_marker_pasted_by_a_person_does_not_turn_the_check_on(self):
+        pasted = codex_comment(login="alice")
+        got, _ = self.review({"issue_comments": [pasted], "recent": [{"number": 11, "comments": [pasted]}]})
+        self.assertEqual(got, ([], False, ""))
 
     def test_the_apps_own_state_on_this_pr_needs_no_other_pr(self):
         (reasons, for_user, text), calls = self.review({"issue_comments": [codex_comment()]})
@@ -880,7 +909,7 @@ class Codex(unittest.TestCase):
         self.assertIn("[dry-run] would merge, not merged", text)
         self.assertTrue(any(c[0] == "api" and "/issues/12/comments" in c[1] for c in calls))
         _, text, _, _ = run_main(args=("--dry-run",), codex={"recent": [{"number": 11, "comments": [
-            {"body": codex_comment()["body"]}]}]})
+            codex_comment()]}]})
         self.assertIn("the Codex security review has not finished", text)
 
 
