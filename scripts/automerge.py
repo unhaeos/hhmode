@@ -404,7 +404,8 @@ MERGEABLE_WORDS = {"MERGEABLE": "no conflicts", "CONFLICTING": "conflicts", "UNK
 
 def message(pr: dict, merge: bool, reasons: list[str], tiers: dict, status: dict, mode: str,
             merged_sha: str | None, error: str | None = None, check: dict | None = None,
-            problems: list[str] | None = None, merged_by: str | None = None) -> str:
+            problems: list[str] | None = None, merged_by: str | None = None,
+            closed: list[int] | None = None) -> str:
     m = re.search(r"github\.com/[^/]+/([^/]+)/pull/", pr.get("url", ""))
     repo = m.group(1) if m else "?"
     if error:
@@ -429,6 +430,8 @@ def message(pr: dict, merge: bool, reasons: list[str], tiers: dict, status: dict
         lines.append("• Why it was not merged: " + ", ".join(reasons))
     if merged_sha and merged_by:
         lines.append(f"• Merged by {merged_by}")
+    if merged_sha and closed:
+        lines.append("• Closed: " + ", ".join(f"#{n}" for n in closed))
     if check and check["merge"]:
         lines.append(f"• Merge check (Claude): {check['reason']}")
     lines += [f"• {p}" for p in problems or []]
@@ -585,9 +588,15 @@ def run(a: argparse.Namespace, repo: pathlib.Path, gate: pathlib.Path) -> int:
             except subprocess.CalledProcessError as e:
                 problems.append(f"could not comment the merge check on the PR: {(e.stderr or str(e)).strip()[:200]}")
     text = message(pr, merge, reasons, tiers, status, "dry-run" if a.dry_run else mode, merged_sha, error,
-                   check, problems, merged_by)
+                   check, problems, merged_by,
+                   # only the issues that did close: a failed close is listed among the problems instead (verifier
+                   # note on 502f5a8)
+                   [i["number"] for i in issues if not any(p.startswith(f"could not close issue #{i['number']}:")
+                                                           for p in problems)] if merged_sha else None)
     print(text)
-    if not a.dry_run and (for_user or a.report or error or problems or mode != "on"):
+    # A merge is reported too (user, 2026-11-02, hhmode #18): until then a merge in mode `on` sent nothing, so the
+    # user heard of no merge at all. Still once per PR head (post_once).
+    if not a.dry_run and (merged_sha or for_user or a.report or error or problems or mode != "on"):
         try:
             print(f"[slack] {post_once(text, gate, a.pr, pr['headRefOid'])}")
         except Exception as e:                          # after a merge, a Slack failure must not hide it
