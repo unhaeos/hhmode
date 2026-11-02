@@ -45,7 +45,10 @@ def tiers_of(gate: pathlib.Path, head: str) -> dict:
         if r.get("review") is None and i == 0:
             return {}
         out[f"Claude verifier{tag}"] = r.get("tier")
-        out[f"Codex review{tag}"] = r.get("gpt")
+        # A fix or carry round has no Codex review of its own; its tier is on the earlier record in the chain, so
+        # "Codex review none" there only misled (merge check on #20).
+        if r.get("gpt") is not None or r.get("mode") not in am.LIGHT:
+            out[f"Codex review{tag}"] = r.get("gpt")
     return out
 
 

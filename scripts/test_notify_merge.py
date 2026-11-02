@@ -35,6 +35,21 @@ class Message(unittest.TestCase):
                          {"author (PR body)": "medium"})
         self.assertEqual(nm.body_tier("no risk section"), {})
 
+    # Merge check on #20: a fix round has no Codex review of its own; the DM showed "Codex review none".
+    def test_a_fix_rounds_missing_codex_review_is_not_shown(self):
+        import record_review as rr
+        gate = pathlib.Path(tempfile.mkdtemp())
+        head, base = "c" * 40, "d" * 40
+        s = "11111111-2222-3333-4444-555555555555"
+        (gate / f"{head}.review.md").write_text(rr.render("PASS", head, {"mode": "fix", "tier": "medium", "lanes": []},
+                                                          "r", s, "PASS", since=base))
+        (gate / f"{base}.review.md").write_text(rr.render("PASS", base, {"mode": "standard", "tier": "medium",
+                                                                         "lanes": []}, "r", s, "PASS"))
+        (gate / f"{base}.gpt.md").write_text("## Findings\nnone\n\n## Tier\nmedium — a.py: x\n")
+        tiers = nm.tiers_of(gate, head)
+        self.assertNotIn("Codex review", tiers)
+        self.assertEqual(tiers[f"Codex review ({base[:7]})"], "medium")
+
     def test_no_record_and_no_commit_still_reads(self):
         text = nm.merged_message({**PR, "mergeCommit": None}, {}, [])
         self.assertIn("Risk: no review record found", text)
