@@ -414,8 +414,9 @@ class Flow(unittest.TestCase):
     """User, 2026-10-30: when CI, the verifier and the review pass, a fresh Claude checks and merges; only what
     needs the user goes to Slack; the issue the PR closes is closed."""
 
-    def test_clean_pr_is_checked_merged_and_its_issue_closed_without_slack(self):
-        rc, text, calls, inputs = run_main()
+    def test_clean_pr_is_checked_merged_and_its_issue_closed_and_reported(self):
+        slack = []
+        rc, text, calls, inputs = run_main(slack=slack)
         self.assertIn(("merge-check", COMMAND), calls)          # Claude was given the merge command and ran it
         self.assertFalse(any(c[:2] == ("pr", "merge") for c in calls))      # so the script did not
         self.assertIn("Merged by the merge check (Claude)", text)
@@ -424,7 +425,11 @@ class Flow(unittest.TestCase):
                             for c in calls))
         self.assertIn("each project is named once", inputs[0])         # the check reads the issue it closes
         self.assertIn("+line", inputs[0])
-        self.assertNotIn("[slack]", text)
+        # hhmode #18 AC1: a merge is reported too, once, with what closed and how to undo it.
+        self.assertEqual(len(slack), 1)
+        self.assertTrue(slack[0].startswith("*[r #12] Merged*"))
+        self.assertIn("• Closed: #7", slack[0])
+        self.assertIn("To undo: `git revert", slack[0])
         self.assertIn("automerge: MERGED", text)
 
     def test_an_issue_github_already_closed_is_left_alone(self):
@@ -547,7 +552,19 @@ class ClaudeMerges(unittest.TestCase):
         self.assertIn("Merged by this script, because the merge check's own command did not run", text)
         self.assertTrue(any(c[:2] == ("issue", "close") for c in calls))
         self.assertIn("automerge: MERGED", text)
-        self.assertNotIn("[slack]", text)
+        self.assertIn("[slack]", text)                          # hhmode #18: every merge is reported
+
+    # hhmode #18 AC3: Slack failing after a merge is printed and does not turn the merge into a failure.
+    def test_slack_failing_after_a_merge_leaves_it_merged(self):
+        saved = am.post_once
+        am.post_once = lambda *a, **k: (_ for _ in ()).throw(OSError("network down"))
+        try:
+            rc, text, calls, _ = run_main()
+        finally:
+            am.post_once = saved
+        self.assertEqual(rc, 0)
+        self.assertIn("[slack] not sent: network down", text)
+        self.assertIn("automerge: MERGED", text)
 
     def test_the_fallback_merge_failing_is_reported(self):
         rc, text, calls, _ = run_main(claude_merges=False, merge_fails="X Head branch was modified")

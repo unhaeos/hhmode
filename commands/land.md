@@ -18,7 +18,7 @@ Land a pull request that `/pr` opened. One PR at a time: do not start the next u
 5. **CI.** `gh pr checks <n> --watch --fail-fast`. Every check green, or stop and report the failing one. CI green is required but is not the verdict; the verdict is the evidence in step 2.
 6. **Merge.** `gh pr merge <n> --squash --delete-branch`. Then read the PR back (`gh pr view <n> --json state,mergeCommit`) — a merge queue may only have queued it.
 7. **After.** In the main checkout, `git pull --ff-only`. Remove the task's worktree if it is clean (`git worktree remove <path>`); if it has leftover work, list it and leave it.
-8. **Report.** Merged commit SHA, PR URL, tier, and anything left behind.
+8. **Report.** From the main checkout, `python3 ~/projects/hhmode/scripts/notify_merge.py <n>`: it DMs the merge to the user's Slack (PR number and title, merge commit, tier, the issues it closed, how to revert), once per PR head. A Slack failure is printed and does not fail or undo the merge. Then print the merged commit SHA, PR URL, tier, and anything left behind.
 
 ## Rules
 
