@@ -814,6 +814,14 @@ class AskedOnce(unittest.TestCase):
         self.assertIn("automerge: TO USER", text)
         self.assertFalse(any(c[:2] == ("pr", "merge") for c in calls))
 
+    # Merge check on PR #27: a check that never answered (timeout, no structured output) is not kept as a no.
+    def test_a_check_that_did_not_answer_is_asked_again(self):
+        here = pathlib.Path(tempfile.mkdtemp())
+        lost = {"merge": False, "reason": "the merge check did not answer: timed out", "session": ""}
+        run_main(check=lost, here=here)
+        _, _, _, second = run_main(check={"merge": False, "reason": "x", "session": "s2"}, here=here)
+        self.assertEqual(len(second), 1)                                # asked again
+
     def test_a_yes_the_merge_did_not_follow_is_retried_without_asking(self):
         here = pathlib.Path(tempfile.mkdtemp())
         _, _, _, first = run_main(claude_merges=False, merge_fails="X Head branch was modified", here=here)

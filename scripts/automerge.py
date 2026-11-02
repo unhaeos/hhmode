@@ -599,7 +599,9 @@ def run(a: argparse.Namespace, repo: pathlib.Path, gate: pathlib.Path) -> int:
                       f"{pr['headRefOid'][:7]}; not asking again")
             else:
                 check = merge_check(check_input(pr, issues, records, diff, rules, codex_text), held)
-                if mode == "on":
+                # Only an answer Claude gave is kept: a timeout or a missing answer (no session) is asked again next
+                # run, not frozen as a no for this head (merge check and verifier note on PR #27).
+                if mode == "on" and check.get("session"):
                     record_decision(gate, pr["number"], pr["headRefOid"], check)
             if not check["merge"]:
                 merge, for_user = False, True
