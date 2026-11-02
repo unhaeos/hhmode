@@ -6,7 +6,9 @@ scripts/automerge.py for each one that is ready, that is:
   - not a draft, and its CI has finished and passed (a failing CI is the author's to fix, /pr step 9);
   - its head commit has a review record on this machine (no record: nothing to check yet);
   - the Codex app's review has finished, where the repo uses the app;
-  - nothing was sent for that head yet (automerge's once-per-head marker, gate/slack-<n>-<sha>.sent).
+  - the merge check has not said no for that head (automerge keeps its answer in gate/merge-check-<n>-<sha>.json,
+    whether or not the DM went out), and nothing was sent to the user for it (gate/slack-<n>-<sha>.sent). A yes the
+    merge did not follow is retried by automerge with the same pinned command, without asking Claude again.
 Only data comes from GitHub (PR numbers, head SHAs, check and Codex states). Nothing GitHub serves runs here: the
 script that runs is this checkout's automerge.py, which holds its own per-PR lock, so /pr step 8 running it at the
 same time is safe. Does nothing while local/automerge is not `on`.
@@ -74,8 +76,11 @@ def why_not(pr: dict, path: pathlib.Path, gate: pathlib.Path) -> str | None:
         return "CI is still running"
     if ci == "failing":
         return "CI is failing (the author's to fix)"
-    if (gate / f"slack-{n}-{head}.sent").exists():
-        return "already checked for this head"
+    earlier = am.decided(gate, n, head)
+    if earlier is not None and not earlier["merge"]:
+        return "the merge check already said no for this head"
+    if earlier is None and (gate / f"slack-{n}-{head}.sent").exists():
+        return "already sent to the user for this head"
     if not (gate / f"{head}.review.md").exists():
         return "no review record for this head yet"
     reasons, _, _ = am.codex_review(pr, path)
@@ -96,11 +101,21 @@ def poll(cfg: dict, dry_run: bool = False, run=run_automerge) -> list[str]:
     log = []
     for entry in cfg["repos"]:
         slug, path = entry["repo"], pathlib.Path(os.path.expanduser(entry["path"]))
-        gate = gate_dir(path)
-        prs = json.loads(am.gh("pr", "list", "-R", slug, "--state", "open", "--json",
-                               "number,url,headRefOid,isDraft,statusCheckRollup", cwd=path))
+        # One repo or one PR that GitHub or git fails on does not end the pass for the rest (verifier on 91848ab).
+        try:
+            gate = gate_dir(path)
+            prs = json.loads(am.gh("pr", "list", "-R", slug, "--state", "open", "--json",
+                                   "number,url,headRefOid,isDraft,statusCheckRollup", cwd=path))
+        except (subprocess.CalledProcessError, OSError, ValueError) as e:
+            log.append(f"{slug}: could not list its PRs: {(getattr(e, 'stderr', None) or str(e)).strip()[:200]}")
+            continue
         for pr in prs:
-            why = why_not(pr, path, gate)
+            try:
+                why = why_not(pr, path, gate)
+            except (subprocess.CalledProcessError, ValueError) as e:
+                log.append(f"{slug}#{pr['number']}: could not read its state: "
+                           f"{(getattr(e, 'stderr', None) or str(e)).strip()[:200]}")
+                continue
             if why:
                 log.append(f"{slug}#{pr['number']} {pr['headRefOid'][:7]}: skipped, {why}")
             elif dry_run:

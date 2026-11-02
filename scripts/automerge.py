@@ -484,6 +484,26 @@ def post_once(text: str, gate: pathlib.Path, number: int, head: str) -> str:
     return sent
 
 
+def decision_file(gate: pathlib.Path, number: int, head: str) -> pathlib.Path:
+    return gate / f"merge-check-{number}-{head}.json"
+
+
+def record_decision(gate: pathlib.Path, number: int, head: str, check: dict) -> None:
+    """The merge check's answer for this head, kept whether or not its Slack message goes out: the merge poller and a
+    second run of this script read it instead of asking Claude again (hhmode #26)."""
+    gate.mkdir(parents=True, exist_ok=True)
+    decision_file(gate, number, head).write_text(json.dumps(check), encoding="utf-8")
+
+
+def decided(gate: pathlib.Path, number: int, head: str) -> dict | None:
+    f = decision_file(gate, number, head)
+    try:
+        d = json.loads(f.read_text(encoding="utf-8")) if f.exists() else None
+    except ValueError:
+        return None
+    return d if isinstance(d, dict) and isinstance(d.get("merge"), bool) else None
+
+
 @contextlib.contextmanager
 def merge_lock(gate: pathlib.Path, owner: str, repo: str, number: int):
     """One merge check per PR at a time: an exclusive lock on <gate>/merge-<owner>-<repo>-<n>.lock, held for the whole
@@ -568,7 +588,19 @@ def run(a: argparse.Namespace, repo: pathlib.Path, gate: pathlib.Path) -> int:
         else:
             # Claude gets the merge command only when this run is allowed to merge: mode `on`, not --dry-run.
             held = merge_command(pr) if mode == "on" else None
-            check = merge_check(check_input(pr, issues, records, diff, rules, codex_text), held)
+            earlier = decided(gate, pr["number"], pr["headRefOid"]) if mode == "on" else None
+            if earlier:
+                # This head was judged already: another starter (/pr step 8 or the poller) does not ask again, and a no
+                # stays a no whether or not its DM went out (verifier on 91848ab, two P1: a no whose Slack failed was
+                # judged again every pass; the second of two starters judged a head the first had sent to the user).
+                # A yes the merge did not follow (an error) is retried with the same pinned command, no new judgment.
+                check, held = earlier, None
+                print(f"automerge: the merge check already said {'yes' if check['merge'] else 'no'} for "
+                      f"{pr['headRefOid'][:7]}; not asking again")
+            else:
+                check = merge_check(check_input(pr, issues, records, diff, rules, codex_text), held)
+                if mode == "on":
+                    record_decision(gate, pr["number"], pr["headRefOid"], check)
             if not check["merge"]:
                 merge, for_user = False, True
                 reasons.append(f"Merge check (Claude): {check['reason']}")

@@ -799,6 +799,31 @@ class ClaudeAnswerLost(unittest.TestCase):
         self.assertFalse(any(c[:2] == ("issue", "close") for c in calls))
 
 
+class AskedOnce(unittest.TestCase):
+    """Verifier on 91848ab (two P1): the merge check's answer for a head is kept whether or not its DM went out, and a
+    second starter (/pr step 8 or the poller) does not ask Claude again for that head."""
+
+    def test_a_no_is_not_asked_again(self):
+        here = pathlib.Path(tempfile.mkdtemp())
+        no = {"merge": False, "reason": "scripts/x.py:3 deletes data", "session": "s1"}
+        _, _, _, first = run_main(check=no, here=here)
+        rc, text, calls, second = run_main(check={"merge": True, "reason": "would merge", "session": "s2"}, here=here)
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [])                                    # Claude was not asked again
+        self.assertIn("already said no", text)
+        self.assertIn("automerge: TO USER", text)
+        self.assertFalse(any(c[:2] == ("pr", "merge") for c in calls))
+
+    def test_a_yes_the_merge_did_not_follow_is_retried_without_asking(self):
+        here = pathlib.Path(tempfile.mkdtemp())
+        _, _, _, first = run_main(claude_merges=False, merge_fails="X Head branch was modified", here=here)
+        rc, text, calls, second = run_main(claude_merges=False, here=here)
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [])
+        self.assertIn(("pr", "merge", "12", "-R", "o/r", "--squash", "--match-head-commit", SHA), calls)
+        self.assertIn("automerge: MERGED", text)
+
+
 class Codex(unittest.TestCase):
     """The Codex app on GitHub (login chatgpt-codex-connector[bot]) edits one PR comment that carries its state as
     JSON. Only that JSON is read."""

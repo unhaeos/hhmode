@@ -71,7 +71,26 @@ class Poll(unittest.TestCase):
         (self.gate / f"slack-1-{READY}.sent").write_text("hash\n")          # what automerge leaves after its DM
         log = self.run_poll()
         self.assertEqual(self.ran, [1])
-        self.assertIn("o/r#1 aaaaaaa: skipped, already checked for this head", log)
+        self.assertIn("o/r#1 aaaaaaa: skipped, already sent to the user for this head", log)
+
+    # Verifier on 91848ab (P1): a no whose DM never went out was judged again every pass.
+    def test_a_no_is_not_asked_again_even_when_its_dm_failed(self):
+        am.record_decision(self.gate, 1, READY, {"merge": False, "reason": "x", "session": "s"})
+        log = self.run_poll()
+        self.assertEqual(self.ran, [])
+        self.assertIn("o/r#1 aaaaaaa: skipped, the merge check already said no for this head", log)
+
+    def test_a_yes_the_merge_did_not_follow_is_retried(self):
+        am.record_decision(self.gate, 1, READY, {"merge": True, "reason": "x", "session": "s"})
+        self.run_poll()
+        self.assertEqual(self.ran, [1])
+
+    # Verifier on 91848ab (P2): one failing repo or PR ended the whole pass.
+    def test_a_failing_repo_does_not_stop_the_others(self):
+        self.cfg["repos"].insert(0, {"repo": "o/broken", "path": str(self.tmp / "not-a-repo")})
+        log = self.run_poll()
+        self.assertTrue(log[0].startswith("o/broken: could not list its PRs"))
+        self.assertEqual(self.ran, [1])
 
     def test_a_new_head_is_checked_again(self):
         (self.gate / f"slack-1-{READY}.sent").write_text("hash\n")
