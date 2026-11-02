@@ -2,8 +2,13 @@
 """Merge a PR without the user when the facts hold and a fresh Claude, the merge check, finds nothing for the user
 to look at. Report to Slack only the PRs that need the user.
 
-Run by /pr after CI: `python3 ~/projects/hhmode/scripts/automerge.py <PR number>` from the task worktree.
+Run by /pr after CI, or by the repo's merge-check runner when CI finishes:
+`python3 ~/projects/hhmode/scripts/automerge.py <PR number>` from the task worktree.
 
+0. One run per PR at a time: an exclusive lock on <git common dir>/gate/merge-<owner>-<repo>-<n>.lock is held for the
+   whole run, and the PR is read fresh after taking it. A PR that is no longer open ends the run quietly (printed, no
+   Slack). The runner workflow and /pr step 8 could start two merge checks on one PR, each with its own Claude (verifier
+   on k-defense-kg caf3607, P1).
 1. Facts, checked here for the PR's head commit. Any that fails stops the merge, and the merge check never starts:
   - the verifier's record says Review PASS and verify PASS (gate/<sha>.review.md, written by record_review.py);
   - the Codex review exists (gate/<sha>.gpt.md, copied by verify_fresh.sh). A standard review (and an old `full` one)
@@ -13,24 +18,38 @@ Run by /pr after CI: `python3 ~/projects/hhmode/scripts/automerge.py <PR number>
     earlier commit also counts that commit's tiers. The author's tier in the PR body is not read: it is free text,
     and the author is the one who wants the merge;
   - GitHub says the PR is open into main and mergeable, and no check is failing or still running;
-  - the PR body fills the PR form and names every acceptance criterion of the issues it closes (scripts/forms.py).
+  - the PR body fills the PR form and names every acceptance criterion of the issues it closes (scripts/forms.py);
+  - where the repo uses the Codex app on GitHub, its security review of this PR has finished with no unresolved
+    findings (codex_review below). It edits one PR comment that carries its state as JSON; that JSON is read, not the
+    prose around it.
 2. The merge check: a fresh headless Claude that wrote and verified nothing reads the PR, the issues it closes, the
-   repo's CLAUDE.md, the records and the diff (skills/code-review/merge-check.md) and answers merge or not, with a
-   reason. A repo rule that sends this kind of change to the user wins over the tiers above.
-3. The merge pins the reviewed commit (--match-head-commit), so a push after the review cannot ride along (pstack:
-   only a clean verdict on the patch that merges authorizes it). Then each issue the PR closes is closed if GitHub
-   left it open, and the merge check's reason goes on the PR as a comment.
+   repo's CLAUDE.md, the records, the Codex app's comments and the diff (skills/code-review/merge-check.md) and answers
+   merge or not, with a reason. A repo rule that sends this kind of change to the user wins over the tiers above.
+3. On a yes, Claude runs the merge itself (user decision 2026-11-02): it is allowed exactly one command, `gh pr merge
+   <n> -R <owner>/<repo> --squash --match-head-commit <reviewed sha>`, and nothing else. An exact allowlist entry pins
+   the PR and the commit (measured 2026-11-02: the entry for PR 17 ran, the same command for PR 16 was denied), so a
+   push after the review cannot ride along (pstack: only a clean verdict on the patch that merges authorizes it). The
+   script then reads the PR back: merged means Claude's command ran; still open means it did not (a denied tool), and
+   the script runs the same pinned command itself, so an approved PR is never left unmerged. Then each issue the PR
+   closes is closed if GitHub left it open, and the merge check's reason goes on the PR as a comment. Only in mode `on`
+   and not --dry-run does Claude get the command; otherwise the check runs with no tools.
 
 Slack, only for what needs the user (user decision 2026-10-30): a high tier, a merge check that says no, a failed
-merge or issue close, or --report (the author gives up after three rounds). A reason the author fixes (CI, review,
-a conflict, the PR form) is printed, not sent. Mode, from local/automerge (gitignored): `on` merges; anything else
-reports what it would have done, to Slack. Slack target: local/notify.json {"token_file": "...", "channel": "..."};
-without it the message is printed. --dry-run prints the facts and does nothing else (no merge check); it still reads
-the issues the PR closes, which is read-only. Every message is plain English (user decision 2026-10-30).
+merge or issue close, unresolved Codex findings, or --report (the author gives up after three rounds). A reason the
+author fixes (CI, review, a conflict, the PR form) is printed, not sent. The same message for the same PR head is sent
+once (a marker file in the gate dir): CI and Gate both finishing starts the runner twice per push (verifier on
+k-defense-kg caf3607: a high-tier PR got "Needs you" twice). Mode, from local/automerge (gitignored): `on` merges;
+anything else reports what it would have done, to Slack. Slack target: local/notify.json {"token_file": "...",
+"channel": "..."}; without it the message is printed. --dry-run prints the facts and does nothing else (no merge
+check); it still reads the issues the PR closes and the Codex app's state, which is read-only. Every message is plain
+English (user decision 2026-10-30).
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
+import hashlib
 import json
 import os
 import pathlib
@@ -171,6 +190,78 @@ def closing_issues(pr: dict, cwd) -> list[dict]:
     return json.loads(out)["data"]["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"]
 
 
+CODEX_BOT = "chatgpt-codex-connector[bot]"     # the Codex app's login in the REST API; gh prints it without "[bot]"
+CODEX_MARK = "codex-review-state:v1"
+CODEX_STATE = re.compile(r"<!--\s*" + re.escape(CODEX_MARK) + r"\s+(\{.*?\})\s*-->", re.S)
+CODEX_RECENT = 10       # recent PRs read to tell whether the repo uses the Codex app
+
+
+def rest_list(path: str, cwd) -> list[dict]:
+    """Every item of a REST list endpoint, all pages."""
+    return [item for page in json.loads(gh("api", path, "--paginate", "--slurp", cwd=cwd)) for item in page]
+
+
+def from_codex(items: list[dict]) -> list[dict]:
+    """The comments written by the Codex app. Only its own login counts: anyone can paste the marker into a comment,
+    and a REST `Bot` login ends in "[bot]", which a person's cannot."""
+    return [c for c in items if (c.get("user") or {}).get("login") == CODEX_BOT]
+
+
+def codex_state(comments: list[dict]) -> dict | None:
+    """The Codex app's review state: the JSON inside `<!-- codex-review-state:v1 {...} -->` in its newest PR comment,
+    never the prose around it. None when it has left no such comment on this PR, {} when the JSON cannot be read."""
+    for c in reversed(from_codex(comments)):
+        m = CODEX_STATE.search(c.get("body") or "")
+        if m:
+            try:
+                state = json.loads(m.group(1))
+            except ValueError:
+                return {}
+            return state if isinstance(state, dict) else {}
+    return None
+
+
+def codex_reasons(state: dict | None, head: str) -> tuple[list[str], bool, str | None]:
+    """(reasons it may not merge, whether they are for the user, a note for the merge check) from the app's state.
+    Not finished is the author's to wait out (the runner starts again when the app edits its comment); unresolved
+    findings are for the user. A review of an earlier commit than the head still counts, with the note."""
+    sec = (state or {}).get("security_review")
+    sec = sec if isinstance(sec, dict) else {}
+    if sec.get("status") != "completed":
+        return ["the Codex security review has not finished"], False, None
+    if sec.get("has_unresolved_findings") is True:
+        return ["the Codex security review has unresolved findings"], True, None
+    seen = sec.get("commit_sha")
+    if seen == head:
+        return [], False, None
+    return [], False, (f"The Codex security review covered commit {str(seen)[:7] if seen else 'unknown'}, "
+                       f"not this PR's head {head[:7]}.")
+
+
+def codex_review(pr: dict, cwd) -> tuple[list[str], bool, str]:
+    """(reasons it may not merge, whether they are for the user, text for the merge check) from the Codex app. The repo
+    uses the app when this PR or any of its CODEX_RECENT most recent PRs has a comment containing the marker, so there
+    is no list of repos to keep. Nothing for a repo that does not."""
+    o, r = owner_repo(pr)
+    n = pr["number"]
+    issue_comments = rest_list(f"repos/{o}/{r}/issues/{n}/comments", cwd)
+    uses = any(CODEX_MARK in (c.get("body") or "") for c in issue_comments)
+    if not uses:
+        recent = json.loads(gh("pr", "list", "-R", f"{o}/{r}", "--state", "all", "--limit", str(CODEX_RECENT),
+                               "--json", "number,comments", cwd=cwd))
+        uses = any(CODEX_MARK in (c.get("body") or "") for p in recent for c in p["comments"])
+    if not uses:
+        return [], False, ""
+    reasons, for_user, note = codex_reasons(codex_state(issue_comments), pr["headRefOid"])
+    reviews = from_codex(rest_list(f"repos/{o}/{r}/pulls/{n}/reviews", cwd))
+    lines = from_codex(rest_list(f"repos/{o}/{r}/pulls/{n}/comments", cwd))
+    texts = [c["body"] for c in from_codex(issue_comments)] + [c["body"] for c in reviews if c.get("body")]
+    texts += [f"{c['path']}:{c.get('line') or c.get('original_line') or '?'}: {c['body']}" for c in lines]
+    section = [f"# Codex security review on GitHub (the Codex app, {CODEX_BOT})"] + ([note] if note else [])
+    section += ["Its comments on this PR (comments, review bodies, then review line comments):"]
+    return reasons, for_user, "\n\n".join(section + (texts or ["(none)"]))
+
+
 DIFF_CAP = 300_000      # characters of diff the merge check reads; a bigger PR goes to the user (GPT lane on c470756:
                         # a change past a cut could not be named, so it would pass)
 CLOSE_WAIT = 5          # seconds to let GitHub's own auto-close land before closing an issue ourselves
@@ -191,7 +282,8 @@ def repo_rules(pr: dict, cwd) -> str | None:
         return "" if "HTTP 404" in (e.stderr or "") else None
 
 
-def check_input(pr: dict, issues: list[dict], records: list[dict], diff: str, rules: str = "") -> str:
+def check_input(pr: dict, issues: list[dict], records: list[dict], diff: str, rules: str = "",
+                codex: str = "") -> str:
     parts = [f"# PR #{pr['number']}: {pr['title']}\n\n{pr.get('body') or '(no body)'}"]
     if rules:
         parts.append(f"# The repo's CLAUDE.md (main)\n\n{rules}")
@@ -200,19 +292,38 @@ def check_input(pr: dict, issues: list[dict], records: list[dict], diff: str, ru
     for r in records:
         parts.append(f"# Verifier record, {r['sha'][:7]}\n\n{r.get('text') or '(none)'}")
         parts.append(f"# Codex review, {r['sha'][:7]}\n\n{r.get('gpt_text') or '(none)'}")
+    if codex:
+        parts.append(codex)
     parts.append(f"# Diff\n\n```diff\n{diff}\n```")
     return "\n\n".join(parts)
 
 
-def merge_check(text: str) -> dict:
-    """{"merge", "reason", "session"} from a fresh headless Claude with no tools, in an empty folder with every
-    customization off (--safe-mode): run inside the PR's worktree it also read the PR branch's own CLAUDE.md, so a PR
-    could rewrite the rule it is judged by (verifier on c470756). One that cannot answer is a no: the PR goes to the
-    user with what it said."""
-    cmd = ["claude", "-p", "Decide whether this pull request merges without the user. The input is on stdin.",
+def merge_args(pr: dict) -> list[str]:
+    """The one `gh` call that merges this PR: pinned to the repo, the PR and the reviewed commit."""
+    o, r = owner_repo(pr)
+    return ["pr", "merge", str(pr["number"]), "-R", f"{o}/{r}", "--squash", "--match-head-commit", pr["headRefOid"]]
+
+
+def merge_command(pr: dict) -> str:
+    return " ".join(["gh", *merge_args(pr)])
+
+
+def merge_check(text: str, command: str | None = None) -> dict:
+    """{"merge", "reason", "session"} from a fresh headless Claude, in an empty folder with every customization off
+    (--safe-mode): run inside the PR's worktree it also read the PR branch's own CLAUDE.md, so a PR could rewrite the
+    rule it is judged by (verifier on c470756). With no `command` it has no tools. With one it has Bash and is allowed
+    exactly that command: an exact entry in --allowedTools pins the PR and the commit (user decision 2026-11-02;
+    measured: the entry for PR 17 ran, the same command for PR 16 was denied). One that cannot answer is a no: the PR
+    goes to the user with what it said."""
+    prompt = "Decide whether this pull request merges without the user. The input is on stdin."
+    tools = ["--tools", ""]
+    if command:
+        prompt += f" If your answer is yes, run this command once, exactly as written, and then answer: {command}"
+        tools = ["--tools", "Bash", "--allowedTools", f"Bash({command})"]
+    cmd = ["claude", "-p", prompt,
            "--safe-mode", "--model", os.environ.get("MERGE_CHECK_MODEL", "claude-opus-5-5"),
            "--append-system-prompt-file", str(HERE / "skills" / "code-review" / "merge-check.md"),
-           "--tools", "", "--output-format", "json", "--json-schema", json.dumps(CHECK_SCHEMA)]
+           *tools, "--output-format", "json", "--json-schema", json.dumps(CHECK_SCHEMA)]
 
     def no(why: str) -> dict:
         return {"merge": False, "reason": f"the merge check could not answer: {why.strip()[:300]}", "session": ""}
@@ -247,13 +358,49 @@ def close_issues(issues: list[dict], pr: dict, merged: str, cwd) -> list[str]:
     return failed
 
 
+BY_CLAUDE = "the merge check (Claude)"
+BY_SCRIPT = "this script, because the merge check's own command did not run"
+
+
+def merge_state(number: int, cwd) -> tuple[str, str | None]:
+    """(state, merge commit) of the PR as GitHub has it now."""
+    d = json.loads(gh("pr", "view", str(number), "--json", "state,mergeCommit", cwd=cwd))
+    return d["state"], (d.get("mergeCommit") or {}).get("oid")
+
+
+def finish_merge(pr: dict, cwd) -> tuple[str | None, str | None, str | None]:
+    """After a yes from a merge check that held the merge command: read the PR back. Merged means Claude's command ran.
+    Still open means it did not (a denied tool, or it skipped the command), so the script runs the same pinned command
+    itself and an approved PR is never left unmerged. Returns (merge commit, who merged, error). A merge refused by
+    branch protection, a draft or a push after the review is an error to report, not to stop on silently (verifier note
+    on 08df90d); one that went through but could not be read back is not an error (verifier note on f07e72f)."""
+    try:
+        state, oid = merge_state(pr["number"], cwd)
+    except (subprocess.CalledProcessError, KeyError, ValueError) as e:
+        return None, None, ("could not read the PR after the merge check, so it is not known whether it merged: "
+                            + (getattr(e, "stderr", None) or str(e)).strip()[:200])
+    if state == "MERGED":
+        return oid or UNKNOWN, BY_CLAUDE, None
+    if state != "OPEN":
+        return None, None, f"the PR was {state.lower()} while the merge check ran"
+    try:
+        gh(*merge_args(pr), cwd=cwd)
+    except subprocess.CalledProcessError as e:
+        return None, None, ((e.stderr or "").strip().splitlines() or [str(e)])[-1][:300]
+    try:
+        oid = merge_state(pr["number"], cwd)[1]
+    except (subprocess.CalledProcessError, KeyError, ValueError):
+        oid = None
+    return oid or UNKNOWN, BY_SCRIPT, None
+
+
 CI_WORDS = {"none": "none", "ok": "passing", "pending": "running", "failing": "failing"}
 MERGEABLE_WORDS = {"MERGEABLE": "no conflicts", "CONFLICTING": "conflicts", "UNKNOWN": "still checking"}
 
 
 def message(pr: dict, merge: bool, reasons: list[str], tiers: dict, status: dict, mode: str,
             merged_sha: str | None, error: str | None = None, check: dict | None = None,
-            problems: list[str] | None = None) -> str:
+            problems: list[str] | None = None, merged_by: str | None = None) -> str:
     m = re.search(r"github\.com/[^/]+/([^/]+)/pull/", pr.get("url", ""))
     repo = m.group(1) if m else "?"
     if error:
@@ -269,13 +416,15 @@ def message(pr: dict, merge: bool, reasons: list[str], tiers: dict, status: dict
              f" · {MERGEABLE_WORDS.get(status['mergeable'], status['mergeable'])}",
              "• Risk (any \"high\" needs you): " + " · ".join(f"{k} {v or 'none'}" for k, v in tiers.items())]
     if error:
-        lines.append(f"• The merge command failed: {error}")
+        lines.append(f"• The merge did not go through: {error}")
     elif merged_sha == UNKNOWN:
         lines.append("• Merged, but the merge commit could not be read back. To undo it, use Revert on the PR page")
     elif merged_sha:
         lines.append(f"• To undo: `git revert {merged_sha[:7]}` or Revert on the PR page")
     elif not merge:
         lines.append("• Why it was not merged: " + ", ".join(reasons))
+    if merged_sha and merged_by:
+        lines.append(f"• Merged by {merged_by}")
     if check and check["merge"]:
         lines.append(f"• Merge check (Claude): {check['reason']}")
     lines += [f"• {p}" for p in problems or []]
@@ -296,6 +445,39 @@ def post_slack(text: str) -> str:
     return "sent" if r.get("ok") else f"not sent: {r.get('error')}"
 
 
+def post_once(text: str, gate: pathlib.Path, number: int, head: str) -> str:
+    """post_slack, but the same message for the same PR head goes out once. The marker file `slack-<n>-<sha>.sent`
+    holds a hash of each message sent for that head. CI and Gate both finishing starts the runner twice per push
+    (verifier on k-defense-kg caf3607: a high-tier PR got "Needs you" twice). A message that did not go out is not
+    marked. Only the first line counts (the PR and the outcome): the merge check's reason is Claude's prose, which
+    differs from run to run, so hashing the whole message sent the same "Needs you" twice."""
+    marker = gate / f"slack-{number}-{head}.sent"
+    digest = hashlib.sha256(text.split("\n", 1)[0].encode("utf-8")).hexdigest()
+    if marker.exists() and digest in marker.read_text().split():
+        return "not sent: the same message was already sent for this commit"
+    sent = post_slack(text)
+    if sent == "sent":
+        gate.mkdir(parents=True, exist_ok=True)
+        with marker.open("a") as f:
+            f.write(digest + "\n")
+    return sent
+
+
+@contextlib.contextmanager
+def merge_lock(gate: pathlib.Path, owner: str, repo: str, number: int):
+    """One merge check per PR at a time: an exclusive lock on <gate>/merge-<owner>-<repo>-<n>.lock, held for the whole
+    run. A second run waits for the first (verifier on k-defense-kg caf3607, P1: the runner and /pr step 8 started two
+    merge checks on one PR at once, each with its own Claude). The lock goes when the file closes, also on a crash."""
+    gate.mkdir(parents=True, exist_ok=True)
+    with open(gate / f"merge-{owner}-{repo}-{number}.lock", "a") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f"automerge: another merge check is running on #{number}; waiting for it")
+            fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("pr", type=int)
@@ -306,11 +488,22 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
 
     repo = a.repo.resolve()
-    pr = json.loads(gh("pr", "view", str(a.pr), "--json",
-                       "number,title,url,state,baseRefName,headRefOid,body,mergeable,statusCheckRollup", cwd=repo))
     common = subprocess.run(["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
                             check=True, capture_output=True, text=True).stdout.strip()
-    records = load_records(pathlib.Path(common) / "gate", pr["headRefOid"])
+    gate = pathlib.Path(common) / "gate"
+    owner, name = owner_repo(json.loads(gh("pr", "view", str(a.pr), "--json", "url", cwd=repo)))
+    with merge_lock(gate, owner, name, a.pr):
+        return run(a, repo, gate)
+
+
+def run(a: argparse.Namespace, repo: pathlib.Path, gate: pathlib.Path) -> int:
+    # Read after taking the lock: a run that waited may find the PR merged by the one before it.
+    pr = json.loads(gh("pr", "view", str(a.pr), "--json",
+                       "number,title,url,state,baseRefName,headRefOid,body,mergeable,statusCheckRollup", cwd=repo))
+    if pr["state"] != "OPEN":
+        print(f"automerge: #{a.pr} is {pr['state']}, nothing to do")
+        return 0
+    records = load_records(gate, pr["headRefOid"])
     merge, reasons, tiers, status = decide(pr, records)
     for_user = "high" in tiers.values()     # the user's call; every other reason is the author's to fix
     mode_file = HERE / "local" / "automerge"
@@ -324,6 +517,15 @@ def main(argv: list[str] | None = None) -> int:
     except subprocess.CalledProcessError as e:
         issues = []
         reasons.append(f"could not read the issues this PR closes: {(e.stderr or str(e)).strip()[:200]}")
+        for_user = True
+    # The Codex app's review is a fact too, read the same way (read-only, also in --dry-run).
+    codex_text = ""
+    try:
+        c_reasons, codex_user, codex_text = codex_review(pr, repo)
+        reasons += c_reasons
+        for_user = for_user or codex_user
+    except subprocess.CalledProcessError as e:
+        reasons.append(f"could not read the Codex review from GitHub: {(e.stderr or str(e)).strip()[:200]}")
         for_user = True
     merge = not reasons
 
@@ -343,39 +545,32 @@ def main(argv: list[str] | None = None) -> int:
             merge, for_user = False, True
             reasons.append(unread)
         else:
-            check = merge_check(check_input(pr, issues, records, diff, rules))
+            # Claude gets the merge command only when this run is allowed to merge: mode `on`, not --dry-run.
+            check = merge_check(check_input(pr, issues, records, diff, rules, codex_text),
+                                merge_command(pr) if mode == "on" else None)
             if not check["merge"]:
                 merge, for_user = False, True
                 reasons.append(f"Merge check (Claude): {check['reason']}")
 
-    merged_sha = error = None
+    merged_sha = merged_by = error = None
     problems: list[str] = []
     if merge and mode == "on" and not a.dry_run:
-        # Branch protection, a draft, or a push after the review make the merge fail: report it, do not stop silently
-        # (verifier note on 08df90d).
-        try:
-            gh("pr", "merge", str(a.pr), "--squash", "--match-head-commit", pr["headRefOid"], cwd=repo)
-        except subprocess.CalledProcessError as e:
-            error = ((e.stderr or "").strip().splitlines() or [str(e)])[-1][:300]
-        if not error:
-            # The merge happened; a failed lookup after it must not read as a failed merge (verifier note on f07e72f).
-            try:
-                merged_sha = json.loads(gh("pr", "view", str(a.pr), "--json", "mergeCommit",
-                                           cwd=repo))["mergeCommit"]["oid"]
-            except (subprocess.CalledProcessError, KeyError, TypeError, ValueError):
-                merged_sha = UNKNOWN
+        merged_sha, merged_by, error = finish_merge(pr, repo)
+        if merged_sha:
             problems = close_issues(issues, pr, merged_sha, repo)
+            said = ("merged." if merged_by == BY_CLAUDE else "approved the merge, but its merge command did not run, "
+                    "so the script ran the same command and merged the PR.")
             try:
                 gh("pr", "comment", str(a.pr), "--body",
-                   f"Merge check (Claude, session {check['session'][:8]}): merged. {check['reason']}", cwd=repo)
+                   f"Merge check (Claude, session {check['session'][:8]}): {said} {check['reason']}", cwd=repo)
             except subprocess.CalledProcessError as e:
                 problems.append(f"could not comment the merge check on the PR: {(e.stderr or str(e)).strip()[:200]}")
     text = message(pr, merge, reasons, tiers, status, "dry-run" if a.dry_run else mode, merged_sha, error,
-                   check, problems)
+                   check, problems, merged_by)
     print(text)
     if not a.dry_run and (for_user or a.report or error or problems or mode != "on"):
         try:
-            print(f"[slack] {post_slack(text)}")
+            print(f"[slack] {post_once(text, gate, a.pr, pr['headRefOid'])}")
         except Exception as e:                          # after a merge, a Slack failure must not hide it
             print(f"[slack] not sent: {e}")
     shown = "dry-run" if a.dry_run else mode
