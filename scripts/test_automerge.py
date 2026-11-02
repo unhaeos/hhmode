@@ -427,7 +427,7 @@ class Flow(unittest.TestCase):
         self.assertIn("+line", inputs[0])
         # hhmode #18 AC1: a merge is reported too, once, with what closed and how to undo it.
         self.assertEqual(len(slack), 1)
-        self.assertTrue(slack[0].startswith("*[r #12] Merged*"))
+        self.assertTrue(slack[0].startswith("✅ *[r #12] Merged*"))
         self.assertIn("• Closed: #7", slack[0])
         self.assertIn("To undo: `git revert", slack[0])
         self.assertIn("automerge: MERGED", text)
@@ -682,6 +682,22 @@ class Lock(unittest.TestCase):
             self.assertFalse(any(c[:2] in {("pr", "merge"), ("pr", "diff"), ("api", "graphql")} for c in calls))
 
 
+class Marks(unittest.TestCase):
+    """hhmode #23 AC1: what the user acts on, what failed and what merged are told apart at a glance in Slack."""
+
+    def test_each_outcome_starts_with_its_mark(self):
+        tiers = {"Claude verifier": "low", "Codex review": "low"}
+        needs = am.message(pr(), False, ["risk tier high"], tiers, STATUS, "on", None)
+        failed = am.message(pr(), True, [], tiers, STATUS, "on", None, error="Pull request is in draft")
+        merged = am.message(pr(), True, [], tiers, STATUS, "on", "e" * 40)
+        trial = am.message(pr(), True, [], tiers, STATUS, "shadow", None)
+        self.assertTrue(needs.startswith("🔔 *[r #12] Needs you*"))
+        self.assertTrue(failed.startswith("⚠️ *[r #12] Merge failed*"))
+        self.assertTrue(merged.startswith("✅ *[r #12] Merged*"))
+        self.assertTrue(trial.startswith("*[r #12] [trial] would merge"))         # no mark: nothing to act on
+        self.assertEqual(am.slack_key(needs), needs.split("\n")[0].removeprefix("🔔 "))
+
+
 class SlackOnce(unittest.TestCase):
     """CI and Gate both finishing starts the runner twice per push (verifier note on k-defense-kg caf3607: a high-tier
     PR got "Needs you" twice)."""
@@ -723,6 +739,16 @@ class SlackOnce(unittest.TestCase):
         finally:
             am.post_slack = saved
         self.assertEqual(sent, [first])
+
+    # hhmode #23 AC2: a message sent before the marks existed is not taken for a new one.
+    def test_a_message_sent_before_the_marks_is_not_sent_again(self):
+        old = "*[r #12] Needs you* — docs: x\n• Why it was not merged: risk tier high\nurl"
+        new = "🔔 *[r #12] Needs you* — docs: x\n• Why it was not merged: risk tier high\nurl"
+        marker = self.gate / f"slack-12-{SHA}.sent"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(am.hashlib.sha256(old.split("\n", 1)[0].encode()).hexdigest() + "\n")
+        self.assertIn("already sent", am.post_once(new, self.gate, 12, SHA))
+        self.assertEqual(self.sent, [])
 
     def test_a_message_that_did_not_go_out_is_tried_again(self):
         am.post_slack = lambda text: "not sent: ratelimited"
