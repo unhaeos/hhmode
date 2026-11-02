@@ -2,7 +2,7 @@
 """Merge a PR without the user when the facts hold and a fresh Claude, the merge check, finds nothing for the user
 to look at. Report to Slack only the PRs that need the user.
 
-Run by /pr after CI, or by the repo's merge-check runner when CI finishes:
+Run by /pr after CI, or by the merge poller (scripts/merge_poll.py) once CI has finished:
 `python3 ~/projects/hhmode/scripts/automerge.py <PR number>` from the task worktree.
 
 0. One run per PR at a time: an exclusive lock on <git common dir>/gate/merge-<owner>-<repo>-<n>.lock is held for the
@@ -223,7 +223,7 @@ def codex_state(comments: list[dict]) -> dict | None:
 
 def codex_reasons(state: dict | None, head: str) -> tuple[list[str], bool, str | None]:
     """(reasons it may not merge, whether they are for the user, a note for the merge check) from the app's state.
-    Not finished is the author's to wait out (the runner starts again when the app edits its comment); unresolved
+    Not finished is the author's to wait out (the merge poller looks again on its next pass); unresolved
     findings are for the user. A review of an earlier commit than the head still counts, with the note."""
     sec = (state or {}).get("security_review")
     sec = sec if isinstance(sec, dict) else {}
