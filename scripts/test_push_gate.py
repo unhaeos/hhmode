@@ -12,6 +12,7 @@ import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import push_gate as pg  # noqa: E402
 import record_review as rr  # noqa: E402
 
 HOOKS = HERE.parent / "githooks"
@@ -113,6 +114,28 @@ class PushGate(unittest.TestCase):
         r = self.push("refs/tags/sneaky:refs/heads/other")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("other (", r.stderr)
+
+    # hhmode #22: with the destination deciding alone, an unreviewed commit pushed as a tag went out unchecked.
+    def test_a_branch_pushed_as_a_tag_is_checked(self):
+        git(self.repo, "checkout", "-q", "main")
+        sha = self.commit("unreviewed")                     # on local main only, not on the remote's main
+        r = self.push("main:refs/tags/x")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(f"refs/tags/x ({sha[:7]})", r.stderr)
+        self.record(sha)
+        self.assertEqual(self.push("main:refs/tags/x").returncode, 0)
+
+    # hhmode #22 AC2: both directions, straight through problems(), as the hook passes them.
+    def test_only_a_deletion_or_a_tag_to_tag_push_skips_the_check(self):
+        sha, zero = "a" * 40, "0" * 40
+        lines = {f"refs/heads/main {sha} refs/tags/x {zero}": True,
+                 f"refs/tags/x {sha} refs/heads/task {zero}": True,
+                 f"refs/heads/task {sha} refs/heads/task {zero}": True,
+                 f"refs/tags/v1 {sha} refs/tags/v1 {zero}": False,
+                 f"(delete) {zero} refs/heads/task {sha}": False}
+        for line, checked in lines.items():
+            got = pg.problems(line + "\n", self.gate, "origin", on_main=lambda s, r: False)
+            self.assertEqual(bool(got), checked, line)
 
     def test_deletes_tags_and_commits_already_on_main_pass(self):
         self.record(self.branch())

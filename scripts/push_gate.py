@@ -48,9 +48,11 @@ def problems(stdin_text: str, gdir: pathlib.Path, remote: str, on_main=on_remote
         parts = line.split()
         if len(parts) != 4:
             continue
-        sha, dest = parts[1], parts[2]
-        # The destination decides: `git push origin refs/tags/x:refs/heads/task` pushes a branch (GPT lane on 8c86c3c).
-        if sha == ZERO or dest.startswith("refs/tags/") or on_main(sha, remote):
+        local, sha, dest = parts[0], parts[1], parts[2]
+        # Only a deletion, or a tag pushed as a tag, skips the check. Either ref alone let a commit out unchecked:
+        # `refs/tags/x:refs/heads/task` when the local ref decided (GPT lane on 8c86c3c), `main:refs/tags/x` when the
+        # destination did (hhmode #22; k-defense-kg #91 closed both).
+        if sha == ZERO or (local.startswith("refs/tags/") and dest.startswith("refs/tags/")) or on_main(sha, remote):
             continue
         name = dest.removeprefix("refs/heads/")
         rec = gdir / f"{sha}.review.md"
