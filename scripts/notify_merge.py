@@ -20,6 +20,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import automerge as am  # noqa: E402
+import forms  # noqa: E402
 
 
 def merged_message(pr: dict, tiers: dict, closed: list[int]) -> str:
@@ -48,13 +49,21 @@ def tiers_of(gate: pathlib.Path, head: str) -> dict:
     return out
 
 
+def body_tier(body: str) -> dict:
+    """The author's tier from the PR body's Risk section, for a merge with no review record on this machine (a /land
+    from another checkout): the DM still names a tier (verifier note on 502f5a8)."""
+    first = next((ln for ln in forms.sections(body).get("Risk", "").splitlines() if ln.strip()), "")
+    tier = forms.tier_line(first)
+    return {"author (PR body)": tier} if tier else {}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("pr", type=int)
     ap.add_argument("--repo", type=pathlib.Path, default=pathlib.Path.cwd())
     a = ap.parse_args(argv)
     repo = a.repo.resolve()
-    pr = json.loads(am.gh("pr", "view", str(a.pr), "--json", "number,title,url,state,mergeCommit,headRefOid",
+    pr = json.loads(am.gh("pr", "view", str(a.pr), "--json", "number,title,url,state,mergeCommit,headRefOid,body",
                           cwd=repo))
     if pr.get("state") != "MERGED":
         print(f"notify_merge: #{a.pr} is {pr.get('state')}, not merged; nothing sent")
@@ -63,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
                             check=True, capture_output=True, text=True).stdout.strip()
     gate = pathlib.Path(common) / "gate"
     closed = [i["number"] for i in am.closing_issues(pr, repo)]
-    text = merged_message(pr, tiers_of(gate, pr["headRefOid"]), closed)
+    text = merged_message(pr, tiers_of(gate, pr["headRefOid"]) or body_tier(pr.get("body") or ""), closed)
     print(text)
     try:
         print(f"[slack] {am.post_once(text, gate, a.pr, pr['headRefOid'])}")

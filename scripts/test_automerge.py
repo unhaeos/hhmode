@@ -554,6 +554,18 @@ class ClaudeMerges(unittest.TestCase):
         self.assertIn("automerge: MERGED", text)
         self.assertIn("[slack]", text)                          # hhmode #18: every merge is reported
 
+    # Verifier note on 502f5a8: an issue whose close failed is not listed as closed.
+    def test_a_failed_issue_close_is_not_listed_as_closed(self):
+        saved = am.close_issues
+        am.close_issues = lambda issues, pr, merged, cwd: [f"could not close issue #7: HTTP 403"]
+        slack = []
+        try:
+            run_main(slack=slack)
+        finally:
+            am.close_issues = saved
+        self.assertNotIn("Closed: #7", slack[0])
+        self.assertIn("could not close issue #7", slack[0])
+
     # hhmode #18 AC3: Slack failing after a merge is printed and does not turn the merge into a failure.
     def test_slack_failing_after_a_merge_leaves_it_merged(self):
         saved = am.post_once

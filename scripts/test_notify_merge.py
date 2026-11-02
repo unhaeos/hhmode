@@ -29,6 +29,12 @@ class Message(unittest.TestCase):
         self.assertIn("• Closed: #18, #19", text)
         self.assertIn("To undo: `git revert eeeeeee`", text)
 
+    # Verifier note on 502f5a8: with no review record here, the tier comes from the PR body's Risk line.
+    def test_the_body_risk_line_stands_in_for_a_missing_record(self):
+        self.assertEqual(nm.body_tier("## Why\nx\n\n## Risk\nmedium — a.py: behaviour\nnone found\n"),
+                         {"author (PR body)": "medium"})
+        self.assertEqual(nm.body_tier("no risk section"), {})
+
     def test_no_record_and_no_commit_still_reads(self):
         text = nm.merged_message({**PR, "mergeCommit": None}, {}, [])
         self.assertIn("Risk: no review record found", text)

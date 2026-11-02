@@ -588,7 +588,11 @@ def run(a: argparse.Namespace, repo: pathlib.Path, gate: pathlib.Path) -> int:
             except subprocess.CalledProcessError as e:
                 problems.append(f"could not comment the merge check on the PR: {(e.stderr or str(e)).strip()[:200]}")
     text = message(pr, merge, reasons, tiers, status, "dry-run" if a.dry_run else mode, merged_sha, error,
-                   check, problems, merged_by, [i["number"] for i in issues] if merged_sha else None)
+                   check, problems, merged_by,
+                   # only the issues that did close: a failed close is listed among the problems instead (verifier
+                   # note on 502f5a8)
+                   [i["number"] for i in issues if not any(p.startswith(f"could not close issue #{i['number']}:")
+                                                           for p in problems)] if merged_sha else None)
     print(text)
     # A merge is reported too (user, 2026-11-02, hhmode #18): until then a merge in mode `on` sent nothing, so the
     # user heard of no merge at all. Still once per PR head (post_once).
