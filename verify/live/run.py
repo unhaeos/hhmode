@@ -55,7 +55,8 @@ def load_checks() -> list:
 
 
 def changed_paths(since: str) -> list[str]:
-    return [p for p in git("diff", "--name-only", f"{since}...HEAD").splitlines() if p]
+    # --no-renames: a renamed script shows as deleted plus added, so the deleted-script rule sees the old name
+    return [p for p in git("diff", "--name-only", "--no-renames", f"{since}...HEAD").splitlines() if p]
 
 
 # A change to any of these can change what every script does, so every check runs.
