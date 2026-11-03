@@ -84,6 +84,9 @@ def expand(paths: list[str]) -> list[str] | None:
     """The changed paths plus every script that imports one of them; None when every check must run."""
     if any(fnmatch.fnmatch(p, pat) for p in paths for pat in RUN_ALL):
         return None
+    # A deleted script is no longer in the import graph, so whoever used it cannot be found: run everything.
+    if any(fnmatch.fnmatch(p, "scripts/*.py") and not (ROOT / p).exists() for p in paths):
+        return None
     graph, out = importers(), set(paths)
     for p in paths:
         out |= graph.get(p, set())

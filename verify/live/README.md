@@ -21,6 +21,7 @@ Add one when review, a property test or a user finds a bug whose class can come 
 
 - A changed path that matches the check's `PATHS`.
 - A changed script that a guarded script imports, directly or through others (`run.py` reads the imports).
+- A deleted script: the import graph no longer has it, so every check runs.
 - Any change to a dependency or runtime file (`pyproject.toml`, `uv.lock`, `requirements*.txt`, `.python-version`)
   or to `verify/live/` itself: every check runs.
 
