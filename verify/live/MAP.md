@@ -1,6 +1,9 @@
 - `check_codex_tier_roundtrip`: For any schema-valid Codex result, automerge.gpt_tier reads back from codex_review.render exactly the tier in the result, never a tier word from the reason or the findings.
   - guards: scripts/codex_review.py, scripts/automerge.py, scripts/forms.py
   - origin: review findings on hhmode a93fe87, 8ddbe0d, c982ba2: 'medium - high' read as medium and merged without the user; fixed by the JSON schema. This check keeps the schema path honest.
+- `check_record_roundtrip`: A record written by record_review.render reads back, through automerge.record_fields, own_meta and carryable, with the verdict, verify result and tier it was written with, and each finding is one review-log row of nine columns, whatever the report and finding text contain.
+  - guards: scripts/record_review.py, scripts/automerge.py
+  - origin: property test 2026-11-03 (blind, not review): a quoted provenance comment in the report made a high-tier record read as low; a line break in a finding title split the review-log row. Fixed in PR #28.
 - `check_review_input_egress`: gpt_review_input.build never includes the contents of a file outside the repo, whatever links the change adds.
   - guards: scripts/gpt_review_input.py
   - origin: review finding on hhmode ac095e1 (Codex, P2): a committed symlink sent its target's contents to Codex.
