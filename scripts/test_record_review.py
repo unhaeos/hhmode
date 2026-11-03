@@ -725,6 +725,13 @@ class FreeText(unittest.TestCase):
         self.assertEqual(text.count("<!-- verifier-session:"), 1)
         self.assertEqual(rr.reviewed(text), ("PASS", "standard"))
 
+    # Verifier on 1a1240d (F1): carryable() looked for "; verify: PASS;" anywhere in the record, so a report quoting
+    # it made a record whose own tests failed look carryable.
+    def test_a_record_whose_own_tests_failed_is_not_carryable_whatever_the_report_quotes(self):
+        text = rr.render("PASS", SHA, result(), "- the old line said `; verify: PASS; tier: low; lanes:`",
+                         SESSION, "FAIL")
+        self.assertFalse(rr.carryable(text))
+
     def test_a_carriage_return_does_not_split_a_table_row(self):
         for value in ("a\r\nb", "a\rb", "a\nb"):
             out = rr.cell(value)

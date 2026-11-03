@@ -229,11 +229,20 @@ def reviewed_as(text: str) -> str | None:
     return got[1] if got else None
 
 
+OWN_META = re.compile(r"<!-- verifier-session: [^;]+; verify: (\w+); (?:tier: (\w+); )?lanes:")
+
+
+def own_meta(text: str) -> tuple[str, str | None] | None:
+    """(verify, tier) from the record's own provenance comment, the last one: a report may quote an older record."""
+    found = OWN_META.findall(text)
+    return (found[-1][0], found[-1][1] or None) if found else None
+
+
 def carryable(text: str) -> bool:
     """Whether a later commit that changed wording only may take this record's result: a verifier's PASS whose tests
     passed too."""
-    got = reviewed(text)
-    return got is not None and got[0] == "PASS" and "; verify: PASS;" in text
+    got, meta = reviewed(text), own_meta(text)
+    return got is not None and got[0] == "PASS" and meta is not None and meta[0] == "PASS"
 
 
 def check_since(repo: pathlib.Path, gdir: pathlib.Path, sha: str, since: str, mode: str) -> str:
@@ -302,10 +311,10 @@ def carry(repo: pathlib.Path, since: str) -> pathlib.Path:
         raise Refused(f"no verify record for {sha[:7]}: run the repo's verify step on this commit, then carry")
     else:
         verify = "PASS"
-    tiers = re.findall(r"; tier: (\w+); lanes:", text)   # the record's own comment is the last one
+    meta = own_meta(text)
     out = gdir / f"{sha}.review.md"
     out.write_text(render_carry(sha, full, review_weight.changed_paths(repo, full, sha),
-                                tiers[-1] if tiers else None, verify), encoding="utf-8")
+                                meta[1] if meta else None, verify), encoding="utf-8")
     gpt = gdir / f"{full}.gpt.md"
     if gpt.exists():            # automerge reads the Codex tier next to the record
         shutil.copyfile(gpt, gdir / f"{sha}.gpt.md")
