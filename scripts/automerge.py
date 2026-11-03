@@ -81,7 +81,9 @@ def gpt_tier(text: str) -> str | None:
 
 def record_fields(text: str) -> dict:
     head = HEAD_RE.match(text or "")
-    meta = re.search(r"<!-- verifier-session: [^;]+; verify: (\w+); (?:tier: (\w+); )?lanes:", text or "")
+    # The last comment is the record's own; a report may quote an older one (record_review.render escapes them now).
+    metas = list(re.finditer(r"<!-- verifier-session: [^;]+; verify: (\w+); (?:tier: (\w+); )?lanes:", text or ""))
+    meta = metas[-1] if metas else None
     return {"review": head.group(1) if head else None, "since": head.group(4) if head else None,
             "mode": head.group(3) if head else None,
             "verify": meta.group(1) if meta else None, "tier": meta.group(2) if meta else None}

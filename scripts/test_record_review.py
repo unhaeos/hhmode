@@ -20,6 +20,8 @@ ISSUES = ("# Issue #7: One header per project\n\n## Background\nx\n\n## Acceptan
           "- [ ] AC1: one header\n- [ ] AC2: no duplicates\n\n## Out of scope\nnone\n\n## Risk\nlow — docs\n\n"
           "# Issue #8: Second\n\n## Acceptance criteria\n- [ ] AC1: works\n")
 WANT = [(7, "AC1"), (7, "AC2"), (8, "AC1")]
+# A report that quotes an old record's provenance comment, as a verifier does when a change touches the format.
+QUOTED = "- The old record ended with `<!-- verifier-session: old; verify: FAIL; tier: low; lanes: bug@1 -->`."
 
 
 def result(**over):
@@ -564,9 +566,9 @@ class Carry(unittest.TestCase):
         self.git("commit", "-q", "-m", msg)
         return self.git("rev-parse", "HEAD")
 
-    def review(self, sha, verdict="PASS", verify="PASS", mode="standard", tier="low"):
+    def review(self, sha, verdict="PASS", verify="PASS", mode="standard", tier="low", report="r"):
         res = {"mode": mode, "tier": tier, "lanes": [], "findings": []}
-        (self.gate / f"{sha}.review.md").write_text(rr.render(verdict, sha, res, "r", SESSION, verify),
+        (self.gate / f"{sha}.review.md").write_text(rr.render(verdict, sha, res, report, SESSION, verify),
                                                     encoding="utf-8")
 
     def carry(self, since):
@@ -607,6 +609,14 @@ class Carry(unittest.TestCase):
             self.review(second, verdict=verdict)
             self.assertEqual(self.carry(self.first), 2, verdict)
             self.assertTrue(self.record(second).startswith(f"**Review: {verdict}**"), verdict)
+
+    # Property test, 2026-11-03: the earlier record's report quoted an old provenance comment, and carry took the tier
+    # from the quote, not from the record's own comment.
+    def test_the_carried_tier_is_the_records_own_not_a_quoted_one(self):
+        self.review(self.first, tier="high", report=QUOTED)
+        second = self.wording_commit()
+        self.assertEqual(self.carry(self.first), 0)
+        self.assertIn("; tier: high; ", self.record(second))
 
     def test_a_repo_with_a_verify_step_needs_this_commits_verify_record(self):
         (self.repo / "scripts").mkdir()
@@ -702,3 +712,32 @@ class Carry(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FreeText(unittest.TestCase):
+    """The verifier's free text (report, finding titles, evidence) goes into formats that scripts parse. Found by a
+    property test on 2026-11-03: none of these broke a review gate yet; each could."""
+
+    def test_a_quoted_provenance_comment_in_the_report_does_not_change_the_fields(self):
+        text = rr.render("PASS", SHA, result(tier="high"), QUOTED, SESSION, "PASS")
+        self.assertEqual(am.record_fields(text)["tier"], "high")
+        self.assertEqual(am.record_fields(text)["verify"], "PASS")
+        self.assertEqual(text.count("<!-- verifier-session:"), 1)
+        self.assertEqual(rr.reviewed(text), ("PASS", "standard"))
+
+    def test_a_carriage_return_does_not_split_a_table_row(self):
+        for value in ("a\r\nb", "a\rb", "a\nb"):
+            out = rr.cell(value)
+            self.assertNotIn("\r", out, repr(value))
+            self.assertNotIn("\n", out, repr(value))
+
+    def test_one_review_log_line_of_nine_columns_per_finding(self):
+        findings = [{"id": "F1", "severity": "P2", "where": "a.py:1\tb", "raised_by": "bug",
+                     "validation": "PLAUSIBLE\nsee below", "title": "cap is soft\nsecond line"},
+                    {"id": "F\r2", "severity": "P3", "where": "-", "raised_by": "rules", "title": "x\ty"}]
+        rows = rr.log_rows(result(findings=findings), SHA, "PASS")
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertNotIn("\n", row)
+            self.assertNotIn("\r", row)
+            self.assertEqual(len(row.split("\t")), 9, repr(row))
