@@ -196,6 +196,17 @@ class Parse(unittest.TestCase):
         self.assertEqual(am.record_fields(text),
                          {"review": "PASS", "since": OLD[:7], "mode": "standard", "verify": "PASS", "tier": "medium"})
 
+    # Property test, 2026-11-03: a verifier report quoted an old provenance comment, and record_fields read the
+    # first comment in the text, so a high tier read as low.
+    def test_record_fields_read_the_records_own_comment_not_a_quoted_one(self):
+        result = {"sha": SHA, "mode": "standard", "tier": "high", "lanes": [], "findings": []}
+        quoted = "- old: `<!-- verifier-session: old; verify: FAIL; tier: low; lanes: bug@1 -->`"
+        text = rr.render("PASS", SHA, result, quoted, "11111111-2222-3333-4444-555555555555", "PASS")
+        self.assertEqual((am.record_fields(text)["verify"], am.record_fields(text)["tier"]), ("PASS", "high"))
+        # a record written before render escaped comments: the record's own comment is the last one
+        legacy = text.replace("&lt;!--", "<!--")
+        self.assertEqual((am.record_fields(legacy)["verify"], am.record_fields(legacy)["tier"]), ("PASS", "high"))
+
     def test_record_fields_read_the_mode_of_every_kind_of_record(self):
         result = {"sha": SHA, "mode": "fix", "tier": "low", "lanes": [], "findings": []}
         fix = rr.render("PASS", SHA, result, "r", "s" * 36, "PASS", since=OLD)
