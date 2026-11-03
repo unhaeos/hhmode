@@ -1,0 +1,9 @@
+- `check_codex_tier_roundtrip`: For any schema-valid Codex result, automerge.gpt_tier reads back from codex_review.render exactly the tier in the result, never a tier word from the reason or the findings.
+  - guards: scripts/codex_review.py, scripts/automerge.py, scripts/forms.py
+  - origin: review findings on hhmode a93fe87, 8ddbe0d, c982ba2: 'medium - high' read as medium and merged without the user; fixed by the JSON schema. This check keeps the schema path honest.
+- `check_review_input_egress`: gpt_review_input.build never includes the contents of a file outside the repo, whatever links the change adds.
+  - guards: scripts/gpt_review_input.py
+  - origin: review finding on hhmode ac095e1 (Codex, P2): a committed symlink sent its target's contents to Codex.
+- `check_review_input_robust`: gpt_review_input.build never raises on a changed file's bytes or name, and every changed UTF-8 text file inside the repo appears in the input with its contents.
+  - guards: scripts/gpt_review_input.py
+  - origin: review finding on hhmode ac095e1 (Opus + Codex, P2): a non-UTF-8 byte raised UnicodeDecodeError and the gate ended before the verifier started; property test 2026-11-03: a non-ASCII name was quoted by git.
