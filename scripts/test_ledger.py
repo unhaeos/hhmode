@@ -36,7 +36,7 @@ class Ledger(unittest.TestCase):
         self.assertIn("PR #27 waits on the AC1 decision", shown)
         self.assertIn("[2] ", shown)
         self.assertTrue(self.file.exists())
-        self.assertEqual(run(self.repo, "done", "1").stdout.strip(), "ledger: removed [1]")
+        self.assertEqual(run(self.repo, "done", "1").stdout.strip(), "ledger: closed [1]")
         shown = run(self.repo, "show").stdout
         self.assertNotIn("PR #27", shown)
         self.assertIn("do not touch k-defense-kg #97", shown)
@@ -116,6 +116,29 @@ class Ledger(unittest.TestCase):
         finally:
             self.file.chmod(0o644)
         self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    # Verifier on d22e8f9 (P2): a git failure on the compact path threw away the items.
+    def test_items_survive_when_git_state_fails(self):
+        empty = pathlib.Path(tempfile.mkdtemp()) / "empty"
+        subprocess.run(["git", "init", "-q", str(empty)], check=True)        # no commit: rev-parse HEAD fails
+        run(empty, "add", "x item")
+        r = run(empty, "--hook", stdin=json.dumps({"source": "compact", "cwd": str(empty)}))
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("x item", r.stdout)
+
+    def test_wrong_shape_input_is_silent(self):
+        r = run(self.repo, "--hook", stdin=json.dumps({"cwd": 5}))
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def test_add_keeps_spaces_and_joins_lines(self):
+        run(self.repo, "add", "keep  two   spaces\nnext line")
+        self.assertIn("keep  two   spaces next line", run(self.repo, "show").stdout)
+
+    def test_a_long_status_says_how_many_more(self):
+        for i in range(25):
+            (self.repo / f"f{i}.txt").write_text("x")
+        out = run(self.repo, "--hook", stdin=json.dumps({"source": "compact", "cwd": str(self.repo)})).stdout
+        self.assertIn("... and 5 more", out)
 
     def test_missing_ledger_on_compact_still_gives_git_state(self):
         out = run(self.repo, "--hook", stdin=json.dumps({"source": "compact", "cwd": str(self.repo)})).stdout
