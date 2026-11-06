@@ -12,7 +12,7 @@ agents/        Subagent definitions (reviewers). Symlinked into ~/.claude/agents
 commands/      Claude Code slash commands (Claude Code only). ~/.claude/commands -> this folder.
 templates/     The two forms a task passes through: issue.md and pr.md (copied to .github/ for github.com).
 principles/    One principle per file. Skills reference them by absolute path.
-scripts/       Checks the harness runs instead of trusting text: forms.py, verify_fresh.sh, review_weight.py, record_review.py, codex_review.py, automerge.py, sync_self.sh (+ tests).
+scripts/       Checks the harness runs instead of trusting text: forms.py, verify_fresh.sh, review_weight.py, record_review.py, codex_review.py, automerge.py, merge_poll.py, sync_self.sh, ledger.py (+ tests).
 log.md         Failure log, one line per incident.
 local/         Machine-local values (identity, paths). Gitignored.
 ```
@@ -68,6 +68,14 @@ Slack (`local/notify.json`: `{"token_file": ..., "channel": ...}`) hears every m
 
 Why not a self-hosted runner: k-defense-kg #73 ran the merge check from a repository-level runner on this PC. The Codex security review of #73 (P1) and GitHub's hardening guide ("any user capable of invoking workflows has access to this environment") both apply: four accounts can push there, and a workflow on any branch naming the runner would run as this user next to the GitHub admin token, the Claude and Codex logins, the Slack token and the DB credentials, with the user in the docker group. The merge check needs exactly those credentials, so the runner was stopped (2026-11-02) and the check moved to a poller that GitHub sends no code to.
 
+## Ledger (what must survive compaction)
+
+Auto-compaction replaces the conversation with an LLM summary, so what lived only in the conversation can drop out: a pending user decision, an instruction relayed from another session, a "do not touch". `scripts/ledger.py` keeps those in `<git common dir>/gate/ledger.md`, one file per repo (shared by its worktrees and sessions, never committed). Write an item the moment it appears (`ledger.py add "PR #27 waits on the user's AC1 decision"`, run in the repo it is about) quoted verbatim with where it came from (the issue, PR or session), and close it once it is resolved (`ledger.py done <n>` marks the line closed and keeps it, so an item that vanishes shows in a diff); `show` lists the open items. `add` only appends. Approach taken from Codex CLI (keeps the user's messages verbatim through compaction), Manus (a pointer back to the source) and Anthropic's long-running harness (fixed-form state that is edited, not rewritten). Requirements still go in the issue body, not here (hhmode #25: one in a comment was missed).
+
+As a SessionStart hook, `ledger.py --hook` prints the open items at session start, with one line on how to add one; after a compaction it prints them with the branch, head, short git status and the files the branch committed since `origin/main`, all read from git rather than from the summary (Factory's 2025 compaction evaluation: every summary method scored lowest on tracking file changes). It prints nothing outside a git repo and always exits 0. Tests: `python3 -m unittest scripts/test_ledger.py`.
+
+Why (hhmode #31, 2026-11-06): the auto-compact window moves from the ~967K default of 1M-window models to 300K (arXiv 2611.05306: frequent compaction kept frontier models' accuracy within a few points on long-horizon tasks), so compaction happens about three times as often and the summary should not have to carry what a file can.
+
 ## Install (new machine)
 
 ```
@@ -87,6 +95,17 @@ Then register `scripts/sync_self.sh` as a SessionStart hook in `~/.claude/settin
 ```
 
 The `[ -f ] || exit 0` wrapper keeps a missing script from breaking session start (same as k-defense-kg's hooks).
+
+Register the ledger hook the same way, as a second entry under `SessionStart` (no matcher: it runs at startup, resume and after every compaction), and set the earlier compaction window:
+
+```json
+{"hooks": [{"type": "command", "timeout": 10,
+  "command": "sh -c '[ -f \"$HOME/projects/hhmode/scripts/ledger.py\" ] || exit 0; exec python3 \"$HOME/projects/hhmode/scripts/ledger.py\" --hook'"}]}
+```
+
+```json
+"autoCompactWindow": 300000
+```
 
 Machine-local values go in `local/` (gitignored); see `commands/*.md` for what they read.
 
