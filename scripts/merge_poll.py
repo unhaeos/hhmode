@@ -26,6 +26,7 @@ and the check moved here, where GitHub sends no code.
   python3 scripts/merge_poll.py --uninstall  stop and remove it
 
 local/merge_poll.json: {"repos": [{"repo": "<owner>/<name>", "path": "~/projects/<name>"}], "interval_minutes": 3}
+A repo entry may add "tick": ["<argv>", ...], run in that repo's checkout before its PRs are read (see poll()).
 """
 from __future__ import annotations
 
@@ -96,11 +97,29 @@ def run_automerge(n: int, path: pathlib.Path) -> str:
     return lines[-1] if lines else f"exit {out.returncode}"
 
 
-def poll(cfg: dict, dry_run: bool = False, run=run_automerge) -> list[str]:
-    """One pass; returns one line per PR looked at."""
+TICK_TIMEOUT = 1800                                             # seconds
+
+
+def run_tick(cmd: list[str], path: pathlib.Path) -> str:
+    try:
+        out = subprocess.run(cmd, cwd=path, capture_output=True, text=True, timeout=TICK_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"failed: {e}"
+    lines = (out.stdout or out.stderr or "").strip().splitlines()
+    return f"exit {out.returncode}" + (f", {lines[-1]}" if lines else "")
+
+
+def poll(cfg: dict, dry_run: bool = False, run=run_automerge, tick=run_tick) -> list[str]:
+    """One pass; returns one line per PR looked at.
+
+    A repo entry's optional "tick" (an argv list run in the repo's own checkout) runs first, so the repo can bring
+    its CI up to date before the PRs are read: k-defense-kg's scripts/ci_budget.py tick switches the required checks
+    to its local CI when the GitHub Actions budget is out, and runs that CI on reviewed heads."""
     log = []
     for entry in cfg["repos"]:
         slug, path = entry["repo"], pathlib.Path(os.path.expanduser(entry["path"]))
+        if entry.get("tick"):
+            log.append(f"{slug}: tick would run" if dry_run else f"{slug}: tick {tick(entry['tick'], path)}")
         # One repo or one PR that GitHub or git fails on does not end the pass for the rest (verifier on 91848ab).
         try:
             gate = gate_dir(path)

@@ -122,6 +122,28 @@ class Poll(unittest.TestCase):
         self.assertEqual(self.ran, [])
         self.assertIn("o/r#1 aaaaaaa: would run the merge check", log)
 
+    def test_a_repo_tick_runs_in_its_checkout_before_its_prs_are_read(self):
+        self.cfg["repos"][0]["tick"] = ["python3", "scripts/ci_budget.py", "tick"]
+        order = []
+        am.gh = lambda *a, cwd: (order.append("gh"), json.dumps(self.prs))[1]
+        log = mp.poll(self.cfg, run=lambda n, path: "automerge: MERGED",
+                      tick=lambda cmd, path: (order.append((tuple(cmd), str(path))), "exit 0")[1])
+        self.assertEqual(order[0], (("python3", "scripts/ci_budget.py", "tick"), str(self.repo)))
+        self.assertEqual(order[1:], ["gh"])
+        self.assertIn("o/r: tick exit 0", log)
+
+    def test_no_tick_without_one_in_the_config_and_none_on_a_dry_run(self):
+        ticks = []
+        mp.poll(self.cfg, run=lambda n, path: "x", tick=lambda cmd, path: ticks.append(cmd))
+        self.cfg["repos"][0]["tick"] = ["true"]
+        log = mp.poll(self.cfg, dry_run=True, run=lambda n, path: "x", tick=lambda cmd, path: ticks.append(cmd))
+        self.assertEqual(ticks, [])
+        self.assertIn("o/r: tick would run", log)
+
+    def test_run_tick_reports_exit_and_last_line_and_survives_a_missing_program(self):
+        self.assertEqual(mp.run_tick(["sh", "-c", "echo one; echo two; exit 3"], self.repo), "exit 3, two")
+        self.assertTrue(mp.run_tick(["/nonexistent/tick"], self.repo).startswith("failed:"))
+
     # AC3: nothing at all while local/automerge is not `on`.
     def test_nothing_while_automerge_is_not_on(self):
         (self.tmp / "local" / "automerge").write_text("shadow\n")
