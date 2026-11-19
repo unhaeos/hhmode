@@ -15,7 +15,7 @@
 # at the new head, and a wording-only change gets none"): scripts/review_weight.py decides from what changed since the
 # newest earlier commit on this branch that a verifier reviewed (PASS or ISSUES):
 #   carry     only wording changed since a PASS: no session starts, the earlier record is carried over
-#   fix       a small change that adds no file: one verifier, lanes bug, verify and live, on `git diff since..HEAD`
+#   fix       a small change that adds no file: one verifier, lanes bug, verify and live, on the diff since (review_weight.py scope_base)
 #   standard  the first review, a large change or a new file: every lane, Codex alongside
 # The mode argument is advice: `standard` forces a standard review, and `full` (the old name) means the same. Without
 # it the weight decides.
@@ -115,6 +115,16 @@ fi
 # A standard review may only start after a review at least as strong as standard; a fix record is weaker.
 if [ "$kind" = standard ] && [ -n "$since" ]; then since=$(newest_review standard); fi
 echo "review: $kind. $reason"
+# What the review lanes and Codex diff against: since, unless the branch merged origin/main after it, in which case
+# since with main merged in, so main's changes stay out (k-defense-kg PR #302, review_weight.py scope_base).
+scope=$(python3 "$here/scripts/review_weight.py" --scope "$src" "$since" "$sha")
+scope_note=""
+if [ -n "$since" ] && [ "$scope" != "$since" ]; then
+  scope_note=" The branch merged origin/main after ${since:0:7}, so ${scope:0:7} is the base: ${since:0:7} with \
+origin/main merged in where that merges cleanly, else the merge-base with origin/main. Changes that came from main are \
+not this branch's to review."
+  echo "scope: ${scope:0:7} (origin/main was merged after ${since:0:7})"
+fi
 
 # Wording only: nothing to run, so no worktree, no Codex, no Claude.
 if [ "$kind" = carry ]; then
@@ -217,7 +227,7 @@ set_gpt_status() { printf '%s\n' "$1" > "$gpt_status.tmp" && mv "$gpt_status.tmp
 run_codex() {
   local gbase gpt_issues=()
   [ -s "$issues" ] && gpt_issues=("$issues")
-  gbase="${since:-$(git -C "$vdir" merge-base origin/main HEAD 2>/dev/null || true)}"
+  gbase="${scope:-$(git -C "$vdir" merge-base origin/main HEAD 2>/dev/null || true)}"
   if ! command -v codex >/dev/null; then
     set_gpt_status "blocked: codex CLI not installed"
   elif [ -z "$gbase" ]; then
@@ -267,8 +277,8 @@ Write result.json and report.md in $work, then run exactly: $record"
 if [ "$kind" = fix ]; then
   prompt="$prompt
 This is a fix round: the lanes are bug, verify and live, with no rules lane and no GPT lane (Codex does not run). \
-${since:0:7} was already reviewed (record $gate/$since.review.md). The bug lane reads only git diff $since..HEAD, \
-plus that record to check its findings were addressed (verifier.md step 3)."
+${since:0:7} was already reviewed (record $gate/$since.review.md). The bug lane reads only git diff $scope..HEAD, \
+plus that record to check its findings were addressed (verifier.md step 3).$scope_note"
 else
   prompt="$prompt
 GPT lane (bug-gpt): Codex is reviewing the same scope in the background, started before you. Before you read its \
@@ -277,7 +287,7 @@ blocked: <reason>. Its review is $gpt (verifier.md step 3)."
   if [ -n "$since" ]; then
     prompt="$prompt
 Scope: ${since:0:7} was already reviewed (record $gate/$since.review.md). Review lanes read only \
-git diff $since..HEAD, plus that record to check its findings were addressed (verifier.md step 3)."
+git diff $scope..HEAD, plus that record to check its findings were addressed (verifier.md step 3).$scope_note"
   fi
 fi
 if [ -s "$issues" ]; then
