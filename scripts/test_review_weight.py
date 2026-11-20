@@ -192,5 +192,102 @@ class Weight(unittest.TestCase):
         self.assertTrue(run("", "HEAD").startswith("standard\t"))
 
 
+
+class ScopeAfterMainMerge(unittest.TestCase):
+    """k-defense-kg PR #302 (cc27790, since 0fa0e49): the branch merged origin/main after its reviewed commit, so
+    since..HEAD carried main's re-recorded golden.json and Codex rated the PR high for a file the branch never
+    touched. The review scope is what the branch itself changed since the reviewed commit."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = pathlib.Path(self.tmp.name) / "r"
+        self.repo.mkdir()
+        self.git("init", "-q", "-b", "main")
+        self.write("app.py", "".join(f"a{i} = {i}\n" for i in range(50)))
+        self.write("golden.json", "{}\n")
+        self.base = self.commit("base")
+        self.git("update-ref", "refs/remotes/origin/main", self.base)
+        self.git("checkout", "-q", "-b", "branch")
+        self.write("api.py", "def f():\n    return 1\n")
+        self.since = self.commit("branch work, reviewed")
+        (self.repo / ".git" / "gate").mkdir()
+        res = {"mode": "standard", "tier": "low", "lanes": [], "findings": []}
+        (self.repo / ".git" / "gate" / f"{self.since}.review.md").write_text(
+            rr.render("PASS", self.since, res, "r", SESSION, "PASS"), encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.repo), "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    def write(self, name, text):
+        (self.repo / name).write_text(text, encoding="utf-8")
+
+    def commit(self, msg):
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", msg)
+        return self.git("rev-parse", "HEAD")
+
+    def main_moves(self, name, text):
+        """origin/main gets a commit changing `name`, and the branch merges it."""
+        self.git("checkout", "-q", "main")
+        self.write(name, text)
+        main = self.commit("main moves")
+        self.git("update-ref", "refs/remotes/origin/main", main)
+        self.git("checkout", "-q", "branch")
+        return main
+
+    def scope_paths(self):
+        return rw.changed_paths(self.repo, rw.scope_base(self.repo, self.since, "HEAD"), "HEAD")
+
+    def test_main_merged_after_the_review_is_left_out(self):
+        self.main_moves("golden.json", "".join(f'"k{i}": {i},\n' for i in range(300)))
+        self.git("merge", "-q", "--no-edit", "origin/main")
+        self.write("api.py", "def f():\n    return 2\n")
+        self.commit("small fix")
+        self.assertEqual(self.scope_paths(), ["api.py"])
+        kind, reason = rw.weight(self.repo, self.since, "HEAD")
+        self.assertEqual(kind, "fix", reason)       # since..HEAD alone has 300+ lines of golden.json: standard
+
+    def test_only_the_merge_of_main_is_nothing_to_review(self):
+        self.main_moves("golden.json", '{"new": 1}\n')
+        self.git("merge", "-q", "--no-edit", "origin/main")
+        self.assertEqual(self.scope_paths(), [])
+        self.assertEqual(rw.weight(self.repo, self.since, "HEAD")[0], "carry")
+
+    def test_a_conflicting_merge_falls_back_to_the_whole_branch(self):
+        self.write("app.py", "a0 = 'branch'\n")
+        self.since = self.commit("the reviewed commit edits app.py")     # since itself conflicts with main
+        main = self.main_moves("app.py", "a0 = 'main'\n")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.git("merge", "-q", "--no-edit", "origin/main")
+        self.write("app.py", "a0 = 'both'\n")
+        self.commit("resolve")
+        # since merged with main conflicts, so the scope is the whole branch against main: merge-base..HEAD.
+        self.assertEqual(rw.scope_base(self.repo, self.since, "HEAD"), main)
+        self.assertEqual(sorted(self.scope_paths()), ["api.py", "app.py"])
+
+    def test_no_merge_of_main_keeps_since(self):
+        self.write("api.py", "def f():\n    return 3\n")
+        self.commit("fix")
+        self.assertEqual(rw.scope_base(self.repo, self.since, "HEAD"), self.since)
+
+    def test_no_origin_main_keeps_since(self):
+        self.git("update-ref", "-d", "refs/remotes/origin/main")
+        self.assertEqual(rw.scope_base(self.repo, self.since, "HEAD"), self.since)
+
+    def test_no_earlier_review_has_no_scope_base(self):
+        self.assertEqual(rw.scope_base(self.repo, "", "HEAD"), "")
+
+    def test_the_command_line_prints_the_scope_base(self):
+        main = self.main_moves("golden.json", '{"new": 1}\n')
+        self.git("merge", "-q", "--no-edit", "origin/main")
+        out = subprocess.run([sys.executable, str(HERE / "review_weight.py"), "--scope", str(self.repo), self.since,
+                              "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+        self.assertNotIn(out, (self.since, main, ""))
+        self.assertEqual(self.git("diff", "--name-only", f"{out}..HEAD"), "")
+
 if __name__ == "__main__":
     unittest.main()
