@@ -9,9 +9,9 @@ scripts/automerge.py for each one that is ready, that is:
   - the merge check has not said no for that head (automerge keeps its answer in gate/merge-check-<n>-<sha>.json,
     whether or not the DM went out), and nothing was sent to the user for it (gate/slack-<n>-<sha>.sent). A yes the
     merge did not follow is retried by automerge with the same pinned command, without asking Claude again.
-Only data comes from GitHub (PR numbers, head SHAs, check and Codex states). Nothing GitHub serves runs here: the
-script that runs is this checkout's automerge.py, which holds its own per-PR lock, so /pr step 8 running it at the
-same time is safe. Does nothing while local/automerge is not `on`.
+Only data comes from GitHub (PR numbers, head SHAs, check and Codex states). No PR's code runs here: the
+scripts that run are this checkout's automerge.py, which holds its own per-PR lock (so /pr step 8 running it at
+the same time is safe), and a repo's tick, only from that repo's clean main. Does nothing while local/automerge is not `on`.
 
 Why (hhmode #26, 2026-11-02): k-defense-kg #73 ran the merge check from a repository-level self-hosted runner on
 this PC. The Codex security review of #73 (P1) and GitHub's hardening guide ("any user capable of invoking workflows
@@ -26,6 +26,7 @@ and the check moved here, where GitHub sends no code.
   python3 scripts/merge_poll.py --uninstall  stop and remove it
 
 local/merge_poll.json: {"repos": [{"repo": "<owner>/<name>", "path": "~/projects/<name>"}], "interval_minutes": 3}
+A repo entry may add "tick": ["<argv>", ...], run in that repo's checkout before its PRs are read (see poll()).
 """
 from __future__ import annotations
 
@@ -96,11 +97,56 @@ def run_automerge(n: int, path: pathlib.Path) -> str:
     return lines[-1] if lines else f"exit {out.returncode}"
 
 
-def poll(cfg: dict, dry_run: bool = False, run=run_automerge) -> list[str]:
-    """One pass; returns one line per PR looked at."""
+TICK_TIMEOUT = 1800                                             # seconds
+
+
+def _git(path: pathlib.Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def tick_refusal(path: pathlib.Path) -> str | None:
+    """Why the checkout may not run its tick: only reviewed main code runs on this PC, with its credentials."""
+    try:
+        if _git(path, "rev-parse", "--abbrev-ref", "HEAD") != "main":
+            return "the checkout is not on main"
+        if _git(path, "rev-parse", "HEAD") != _git(path, "rev-parse", "origin/main"):
+            return "the checkout is not at origin/main"
+        if _git(path, "status", "--porcelain", "--untracked-files=no"):
+            return "the checkout has uncommitted changes"
+        if _git(path, "ls-files", "--others", "--exclude-standard", "--", "*.py"):
+            return "the checkout has untracked Python files"
+    except (subprocess.CalledProcessError, OSError) as e:
+        return f"git could not read the checkout: {(getattr(e, 'stderr', None) or str(e)).strip()[:200]}"
+    return None
+
+
+def run_tick(cmd: list[str], path: pathlib.Path) -> str:
+    why = tick_refusal(path)
+    if why:
+        return f"refused: {why}"
+    try:
+        out = subprocess.run(cmd, cwd=path, capture_output=True, text=True, errors="replace", timeout=TICK_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"failed: {e}"
+    lines = (out.stdout or out.stderr or "").strip().splitlines()
+    return f"exit {out.returncode}" + (f", {lines[-1]}" if lines else "")
+
+
+def poll(cfg: dict, dry_run: bool = False, run=run_automerge, tick=run_tick) -> list[str]:
+    """One pass; returns one line per PR looked at.
+
+    A repo entry's optional "tick" (an argv list run in the repo's own checkout, only while that checkout is clean
+    main at origin/main) runs first, so the repo can bring its CI up to date before the PRs are read: k-defense-kg's
+    scripts/ci_budget.py tick switches the required checks to its local CI when the GitHub Actions budget is out, and
+    runs that CI on reviewed heads."""
     log = []
     for entry in cfg["repos"]:
         slug, path = entry["repo"], pathlib.Path(os.path.expanduser(entry["path"]))
+        if entry.get("tick"):
+            try:
+                log.append(f"{slug}: tick would run" if dry_run else f"{slug}: tick {tick(entry['tick'], path)}")
+            except Exception as e:                      # a tick never ends the pass for the PRs or the other repos
+                log.append(f"{slug}: tick failed: {e}")
         # One repo or one PR that GitHub or git fails on does not end the pass for the rest (verifier on 91848ab).
         try:
             gate = gate_dir(path)
